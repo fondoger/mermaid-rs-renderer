@@ -1,3 +1,11 @@
+//! Configuration types for the Mermaid renderer.
+//!
+//! The top-level [`Config`] aggregates a [`Theme`], a [`LayoutConfig`] (spacing,
+//! routing, and per-diagram tuning knobs), and a [`RenderConfig`] (output
+//! dimensions and background colour). Configuration values can be loaded from
+//! a JSON file, overridden by `%%{init}%%` directives in the Mermaid source,
+//! or set programmatically.
+
 use crate::theme::Theme;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -37,6 +45,7 @@ const MINDMAP_SECTION_LABEL_COLORS: [&str; 12] = [
     "black", "black",
 ];
 
+/// Layout and rendering parameters for requirement diagrams.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequirementConfig {
     pub fill: String,
@@ -92,6 +101,7 @@ impl Default for RequirementConfig {
     }
 }
 
+/// Layout and rendering parameters for mindmap diagrams.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MindmapConfig {
     pub use_max_width: bool,
@@ -156,6 +166,7 @@ impl Default for MindmapConfig {
     }
 }
 
+/// Layout and rendering parameters for git graph diagrams.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitGraphConfig {
     pub diagram_padding: f32,
@@ -327,6 +338,7 @@ impl Default for GitGraphConfig {
     }
 }
 
+/// Layout and rendering parameters for C4 architecture diagrams.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct C4Config {
     pub use_max_width: bool,
@@ -604,22 +616,29 @@ impl Default for C4Config {
     }
 }
 
+/// How treemap diagrams should be rendered.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
 pub enum TreemapRenderMode {
+    /// Show an error/fallback placeholder.
     Error,
+    /// Render as a flowchart-style layout.
     #[default]
     Flowchart,
 }
 
+/// How pie chart diagrams should be rendered.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum PieRenderMode {
+    /// Show an error/fallback placeholder.
     #[default]
     Error,
+    /// Render as a real pie chart.
     Chart,
 }
 
+/// Layout and rendering parameters for pie chart diagrams.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PieConfig {
     pub render_mode: PieRenderMode,
@@ -679,6 +698,7 @@ impl Default for PieConfig {
     }
 }
 
+/// Layout and rendering parameters for treemap diagrams.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreemapConfig {
     pub render_mode: TreemapRenderMode,
@@ -736,6 +756,7 @@ impl Default for TreemapConfig {
     }
 }
 
+/// Global layout parameters shared across all diagram types, plus per-diagram sub-configs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayoutConfig {
     pub node_spacing: f32,
@@ -781,6 +802,7 @@ impl LayoutConfig {
     }
 }
 
+/// Flowchart-specific layout tuning (crossing minimisation, port assignment, routing).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowchartLayoutConfig {
     pub order_passes: usize,
@@ -806,6 +828,7 @@ impl Default for FlowchartLayoutConfig {
     }
 }
 
+/// A single bucket in the node-count → spacing-scale lookup table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlowchartAutoSpacingBucket {
@@ -813,6 +836,7 @@ pub struct FlowchartAutoSpacingBucket {
     pub scale: f32,
 }
 
+/// Automatic spacing adjustment for large flowcharts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlowchartAutoSpacingConfig {
@@ -856,6 +880,7 @@ impl Default for FlowchartAutoSpacingConfig {
     }
 }
 
+/// Edge routing strategy for flowcharts (A* grid router settings).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlowchartRoutingConfig {
@@ -880,6 +905,7 @@ impl Default for FlowchartRoutingConfig {
     }
 }
 
+/// Output rendering parameters (PNG dimensions, background colour).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderConfig {
     pub width: f32,
@@ -897,6 +923,7 @@ impl Default for RenderConfig {
     }
 }
 
+/// Top-level configuration combining theme, layout, and render settings.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub theme: Theme,
@@ -2668,4 +2695,91 @@ pub fn load_config(path: Option<&Path>) -> anyhow::Result<Config> {
     config.render.background = config.theme.background.clone();
 
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_has_sensible_values() {
+        let config = Config::default();
+        assert!(config.layout.node_spacing > 0.0);
+        assert!(config.layout.rank_spacing > 0.0);
+        assert!(config.layout.node_padding_x > 0.0);
+        assert!(config.layout.node_padding_y > 0.0);
+        assert!(config.layout.max_label_width_chars > 0);
+        assert!(config.render.width > 0.0);
+        assert!(config.render.height > 0.0);
+        assert!(!config.render.background.is_empty());
+    }
+
+    #[test]
+    fn layout_config_default_round_trip_json() {
+        let config = LayoutConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: LayoutConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.node_spacing, config.node_spacing);
+        assert_eq!(parsed.rank_spacing, config.rank_spacing);
+        assert_eq!(parsed.max_label_width_chars, config.max_label_width_chars);
+    }
+
+    #[test]
+    fn pie_config_default_round_trip_json() {
+        let config = PieConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: PieConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.render_mode, PieRenderMode::Chart);
+        assert_eq!(parsed.height, config.height);
+    }
+
+    #[test]
+    fn flowchart_routing_config_defaults() {
+        let config = FlowchartRoutingConfig::default();
+        assert!(config.enable_grid_router);
+        assert!(config.grid_cell > 0.0);
+        assert!(config.max_steps > 0);
+    }
+
+    #[test]
+    fn class_label_line_height_scales() {
+        let config = LayoutConfig::default();
+        let class_lh = config.class_label_line_height();
+        assert!(class_lh < config.label_line_height);
+        assert!(class_lh > 0.0);
+    }
+
+    #[test]
+    fn load_config_none_returns_default() {
+        let config = load_config(None).unwrap();
+        let default = Config::default();
+        assert_eq!(config.layout.node_spacing, default.layout.node_spacing);
+    }
+
+    #[test]
+    fn load_config_missing_file_returns_error() {
+        let result = load_config(Some(std::path::Path::new("/nonexistent/config.json")));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn auto_spacing_buckets_are_sorted() {
+        let config = FlowchartAutoSpacingConfig::default();
+        for window in config.buckets.windows(2) {
+            assert!(
+                window[0].min_nodes <= window[1].min_nodes,
+                "buckets should be sorted by min_nodes"
+            );
+        }
+    }
+
+    #[test]
+    fn render_config_default_round_trip_json() {
+        let config = RenderConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: RenderConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.width, config.width);
+        assert_eq!(parsed.height, config.height);
+        assert_eq!(parsed.background, config.background);
+    }
 }

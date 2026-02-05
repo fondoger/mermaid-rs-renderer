@@ -1,3 +1,10 @@
+//! Layout engine — computes positioned geometry from the parsed IR.
+//!
+//! The primary entry point is [`compute_layout`], which takes a [`Graph`],
+//! [`Theme`], and [`LayoutConfig`] and returns a [`Layout`] containing all
+//! positioned nodes, edges, subgraphs, and diagram-specific geometry ready
+//! for SVG rendering.
+
 use crate::config::{LayoutConfig, PieRenderMode, TreemapRenderMode};
 use crate::ir::{Direction, Graph};
 use crate::text_metrics;
@@ -5,13 +12,17 @@ use crate::theme::{adjust_color, parse_color_to_hsl, Theme};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque};
 
+/// A measured block of text split into lines.
 #[derive(Debug, Clone)]
 pub struct TextBlock {
     pub lines: Vec<String>,
+    /// Total width in SVG units.
     pub width: f32,
+    /// Total height in SVG units.
     pub height: f32,
 }
 
+/// Positioned layout data for a single node.
 #[derive(Debug, Clone)]
 pub struct NodeLayout {
     pub id: String,
@@ -23,10 +34,13 @@ pub struct NodeLayout {
     pub shape: crate::ir::NodeShape,
     pub style: crate::ir::NodeStyle,
     pub link: Option<crate::ir::NodeLink>,
+    /// If set, this node is anchored to the given subgraph index for edge routing.
     pub anchor_subgraph: Option<usize>,
+    /// Hidden nodes are used for internal layout but not rendered.
     pub hidden: bool,
 }
 
+/// Positioned layout data for an edge, including its routed path.
 #[derive(Debug, Clone)]
 pub struct EdgeLayout {
     pub from: String,
@@ -34,6 +48,7 @@ pub struct EdgeLayout {
     pub label: Option<TextBlock>,
     pub start_label: Option<TextBlock>,
     pub end_label: Option<TextBlock>,
+    /// The polyline waypoints for this edge.
     pub points: Vec<(f32, f32)>,
     pub directed: bool,
     pub arrow_start: bool,
@@ -69,6 +84,7 @@ struct PortCandidate {
     other_pos: f32,
 }
 
+/// Positioned subgraph (cluster) bounding box.
 #[derive(Debug, Clone)]
 pub struct SubgraphLayout {
     pub label: String,
@@ -81,6 +97,7 @@ pub struct SubgraphLayout {
     pub style: crate::ir::NodeStyle,
 }
 
+/// A vertical lifeline in a sequence diagram.
 #[derive(Debug, Clone)]
 pub struct Lifeline {
     pub id: String,
@@ -89,6 +106,7 @@ pub struct Lifeline {
     pub y2: f32,
 }
 
+/// A positioned text label in a sequence diagram.
 #[derive(Debug, Clone)]
 pub struct SequenceLabel {
     pub x: f32,
@@ -96,6 +114,7 @@ pub struct SequenceLabel {
     pub text: TextBlock,
 }
 
+/// Positioned combined fragment (alt/loop/opt) in a sequence diagram.
 #[derive(Debug, Clone)]
 pub struct SequenceFrameLayout {
     pub kind: crate::ir::SequenceFrameKind,
@@ -109,6 +128,7 @@ pub struct SequenceFrameLayout {
     pub dividers: Vec<f32>,
 }
 
+/// Positioned participant box grouping in a sequence diagram.
 #[derive(Debug, Clone)]
 pub struct SequenceBoxLayout {
     pub x: f32,
@@ -119,6 +139,7 @@ pub struct SequenceBoxLayout {
     pub color: Option<String>,
 }
 
+/// Positioned note in a sequence diagram.
 #[derive(Debug, Clone)]
 pub struct SequenceNoteLayout {
     pub x: f32,
@@ -131,6 +152,7 @@ pub struct SequenceNoteLayout {
     pub index: usize,
 }
 
+/// Positioned note in a state diagram.
 #[derive(Debug, Clone)]
 pub struct StateNoteLayout {
     pub x: f32,
@@ -142,6 +164,7 @@ pub struct StateNoteLayout {
     pub target: String,
 }
 
+/// Positioned activation box on a sequence diagram lifeline.
 #[derive(Debug, Clone)]
 pub struct SequenceActivationLayout {
     pub x: f32,
@@ -152,6 +175,7 @@ pub struct SequenceActivationLayout {
     pub depth: usize,
 }
 
+/// Auto-number badge positioned beside a sequence message.
 #[derive(Debug, Clone)]
 pub struct SequenceNumberLayout {
     pub x: f32,
@@ -159,6 +183,7 @@ pub struct SequenceNumberLayout {
     pub value: usize,
 }
 
+/// Positioned pie chart slice with start/end angles.
 #[derive(Debug, Clone)]
 pub struct PieSliceLayout {
     pub label: TextBlock,
@@ -168,6 +193,7 @@ pub struct PieSliceLayout {
     pub color: String,
 }
 
+/// A single item in the pie chart legend.
 #[derive(Debug, Clone)]
 pub struct PieLegendItem {
     pub x: f32,
@@ -178,6 +204,7 @@ pub struct PieLegendItem {
     pub value: f32,
 }
 
+/// Positioned pie chart title text.
 #[derive(Debug, Clone)]
 pub struct PieTitleLayout {
     pub x: f32,
@@ -185,6 +212,7 @@ pub struct PieTitleLayout {
     pub text: TextBlock,
 }
 
+/// Positioned node (vertical bar) in a Sankey diagram.
 #[derive(Debug, Clone)]
 pub struct SankeyNodeLayout {
     pub id: String,
@@ -198,6 +226,7 @@ pub struct SankeyNodeLayout {
     pub color: String,
 }
 
+/// Positioned flow link between two Sankey nodes.
 #[derive(Debug, Clone)]
 pub struct SankeyLinkLayout {
     pub source: String,
@@ -211,6 +240,7 @@ pub struct SankeyLinkLayout {
     pub gradient_id: String,
 }
 
+/// Complete positioned Sankey diagram layout.
 #[derive(Debug, Clone)]
 pub struct SankeyLayout {
     pub width: f32,
@@ -220,6 +250,7 @@ pub struct SankeyLayout {
     pub links: Vec<SankeyLinkLayout>,
 }
 
+/// Positioned branch label background and text in a git graph.
 #[derive(Debug, Clone)]
 pub struct GitGraphBranchLabelLayout {
     pub bg_x: f32,
@@ -232,6 +263,7 @@ pub struct GitGraphBranchLabelLayout {
     pub text_height: f32,
 }
 
+/// Positioned branch lane in a git graph.
 #[derive(Debug, Clone)]
 pub struct GitGraphBranchLayout {
     pub name: String,
@@ -240,6 +272,7 @@ pub struct GitGraphBranchLayout {
     pub label: GitGraphBranchLabelLayout,
 }
 
+/// SVG transform (translate + rotate) for git graph labels.
 #[derive(Debug, Clone)]
 pub struct GitGraphTransform {
     pub translate_x: f32,
@@ -249,6 +282,7 @@ pub struct GitGraphTransform {
     pub rotate_cy: f32,
 }
 
+/// Positioned commit label (id/message) in a git graph.
 #[derive(Debug, Clone)]
 pub struct GitGraphCommitLabelLayout {
     pub text: String,
@@ -261,6 +295,7 @@ pub struct GitGraphCommitLabelLayout {
     pub transform: Option<GitGraphTransform>,
 }
 
+/// Positioned tag badge on a git graph commit.
 #[derive(Debug, Clone)]
 pub struct GitGraphTagLayout {
     pub text: String,
@@ -272,6 +307,7 @@ pub struct GitGraphTagLayout {
     pub transform: Option<GitGraphTransform>,
 }
 
+/// Positioned commit dot in a git graph.
 #[derive(Debug, Clone)]
 pub struct GitGraphCommitLayout {
     pub id: String,
@@ -286,12 +322,14 @@ pub struct GitGraphCommitLayout {
     pub label: Option<GitGraphCommitLabelLayout>,
 }
 
+/// An arrow path connecting commits in a git graph.
 #[derive(Debug, Clone)]
 pub struct GitGraphArrowLayout {
     pub path: String,
     pub color_index: usize,
 }
 
+/// Complete positioned git graph layout.
 #[derive(Debug, Clone)]
 pub struct GitGraphLayout {
     pub branches: Vec<GitGraphBranchLayout>,
@@ -305,6 +343,7 @@ pub struct GitGraphLayout {
     pub direction: Direction,
 }
 
+/// Layout data for an error/fallback placeholder SVG.
 #[derive(Debug, Clone)]
 pub struct ErrorLayout {
     pub viewbox_width: f32,
@@ -324,6 +363,7 @@ pub struct ErrorLayout {
     pub icon_ty: f32,
 }
 
+/// A single bar in an XY chart layout.
 #[derive(Debug, Clone)]
 pub struct XYChartBarLayout {
     pub x: f32,
@@ -334,12 +374,14 @@ pub struct XYChartBarLayout {
     pub color: String,
 }
 
+/// A line series in an XY chart layout.
 #[derive(Debug, Clone)]
 pub struct XYChartLineLayout {
     pub points: Vec<(f32, f32)>,
     pub color: String,
 }
 
+/// Complete positioned XY chart layout.
 #[derive(Debug, Clone)]
 pub struct XYChartLayout {
     pub title: Option<TextBlock>,
@@ -360,6 +402,7 @@ pub struct XYChartLayout {
     pub height: f32,
 }
 
+/// Positioned time period and events in a timeline diagram.
 #[derive(Debug, Clone)]
 pub struct TimelineEventLayout {
     pub time: TextBlock,
@@ -371,6 +414,7 @@ pub struct TimelineEventLayout {
     pub circle_y: f32,
 }
 
+/// Positioned section header in a timeline diagram.
 #[derive(Debug, Clone)]
 pub struct TimelineSectionLayout {
     pub label: TextBlock,
@@ -380,6 +424,7 @@ pub struct TimelineSectionLayout {
     pub height: f32,
 }
 
+/// Complete positioned timeline diagram layout.
 #[derive(Debug, Clone)]
 pub struct TimelineLayout {
     pub title: Option<TextBlock>,
@@ -393,6 +438,7 @@ pub struct TimelineLayout {
     pub height: f32,
 }
 
+/// Positioned actor marker in a user journey diagram.
 #[derive(Debug, Clone)]
 pub struct JourneyActorLayout {
     pub name: String,
@@ -402,6 +448,7 @@ pub struct JourneyActorLayout {
     pub radius: f32,
 }
 
+/// Positioned task card in a user journey diagram.
 #[derive(Debug, Clone)]
 pub struct JourneyTaskLayout {
     pub id: String,
@@ -418,6 +465,7 @@ pub struct JourneyTaskLayout {
     pub section_idx: usize,
 }
 
+/// Positioned section background in a user journey diagram.
 #[derive(Debug, Clone)]
 pub struct JourneySectionLayout {
     pub label: TextBlock,
@@ -428,6 +476,7 @@ pub struct JourneySectionLayout {
     pub color: String,
 }
 
+/// Complete positioned user journey diagram layout.
 #[derive(Debug, Clone)]
 pub struct JourneyLayout {
     pub title: Option<TextBlock>,
@@ -445,6 +494,11 @@ pub struct JourneyLayout {
     pub height: f32,
 }
 
+/// The complete positioned layout for a diagram, ready for SVG rendering.
+///
+/// Contains all positioned nodes, edges, subgraphs, and diagram-specific
+/// geometry. Only the fields relevant to the diagram's [`DiagramKind`](crate::ir::DiagramKind)
+/// are populated; the rest are empty or `None`.
 #[derive(Debug, Clone)]
 pub struct Layout {
     pub kind: crate::ir::DiagramKind,
@@ -477,6 +531,7 @@ pub struct Layout {
     pub height: f32,
 }
 
+/// Complete positioned C4 diagram layout.
 #[derive(Debug, Clone)]
 pub struct C4Layout {
     pub shapes: Vec<C4ShapeLayout>,
@@ -489,6 +544,7 @@ pub struct C4Layout {
     pub use_max_width: bool,
 }
 
+/// Positioned wrapped text block in a C4 element.
 #[derive(Debug, Clone)]
 pub struct C4TextLayout {
     pub text: String,
@@ -498,6 +554,7 @@ pub struct C4TextLayout {
     pub y: f32,
 }
 
+/// Positioned C4 element (person/system/container/component).
 #[derive(Debug, Clone)]
 pub struct C4ShapeLayout {
     pub id: String,
@@ -517,6 +574,7 @@ pub struct C4ShapeLayout {
     pub image_y: Option<f32>,
 }
 
+/// Positioned C4 boundary box.
 #[derive(Debug, Clone)]
 pub struct C4BoundaryLayout {
     pub id: String,
@@ -532,6 +590,7 @@ pub struct C4BoundaryLayout {
     pub height: f32,
 }
 
+/// Positioned C4 relationship arrow.
 #[derive(Debug, Clone)]
 pub struct C4RelLayout {
     pub kind: crate::ir::C4RelKind,
@@ -547,6 +606,7 @@ pub struct C4RelLayout {
     pub text_color: Option<String>,
 }
 
+/// Complete positioned quadrant chart layout.
 #[derive(Debug, Clone)]
 pub struct QuadrantLayout {
     pub title: Option<TextBlock>,
@@ -563,6 +623,7 @@ pub struct QuadrantLayout {
     pub grid_height: f32,
 }
 
+/// Positioned data point in a quadrant chart.
 #[derive(Debug, Clone)]
 pub struct QuadrantPointLayout {
     pub label: TextBlock,
@@ -571,6 +632,7 @@ pub struct QuadrantPointLayout {
     pub color: String,
 }
 
+/// Complete positioned Gantt chart layout.
 #[derive(Debug, Clone)]
 pub struct GanttLayout {
     pub title: Option<TextBlock>,
@@ -593,6 +655,7 @@ pub struct GanttLayout {
     pub ticks: Vec<GanttTick>,
 }
 
+/// Positioned Gantt section header row.
 #[derive(Debug, Clone)]
 pub struct GanttSectionLayout {
     pub label: TextBlock,
@@ -602,6 +665,7 @@ pub struct GanttSectionLayout {
     pub band_color: String,
 }
 
+/// Positioned Gantt task bar.
 #[derive(Debug, Clone)]
 pub struct GanttTaskLayout {
     pub label: TextBlock,
@@ -615,6 +679,7 @@ pub struct GanttTaskLayout {
     pub status: Option<crate::ir::GanttStatus>,
 }
 
+/// A tick mark on the Gantt time axis.
 #[derive(Debug, Clone)]
 pub struct GanttTick {
     pub x: f32,
@@ -1484,6 +1549,10 @@ fn is_region_subgraph(sub: &crate::ir::Subgraph) -> bool {
             .unwrap_or(false)
 }
 
+/// Compute positioned geometry for the given diagram.
+///
+/// Dispatches to diagram-specific layout algorithms based on `graph.kind` and
+/// returns a [`Layout`] containing all positioned elements ready for rendering.
 pub fn compute_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) -> Layout {
     match graph.kind {
         crate::ir::DiagramKind::Sequence | crate::ir::DiagramKind::ZenUML => {
@@ -5848,8 +5917,11 @@ fn compute_flowchart_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig)
     let mut edge_ports: Vec<EdgePortInfo> = Vec::with_capacity(graph.edges.len());
     let mut port_candidates: HashMap<(String, EdgeSide), Vec<PortCandidate>> = HashMap::new();
     for (idx, edge) in graph.edges.iter().enumerate() {
-        let from_layout = nodes.get(&edge.from).expect("from node missing");
-        let to_layout = nodes.get(&edge.to).expect("to node missing");
+        let (Some(from_layout), Some(to_layout)) =
+            (nodes.get(&edge.from), nodes.get(&edge.to))
+        else {
+            continue;
+        };
         let temp_from = from_layout.anchor_subgraph.and_then(|anchor_idx| {
             subgraphs
                 .get(anchor_idx)
@@ -6001,8 +6073,11 @@ fn compute_flowchart_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig)
 
     let mut route_order: Vec<(f32, usize)> = Vec::with_capacity(graph.edges.len());
     for (idx, edge) in graph.edges.iter().enumerate() {
-        let from_layout = nodes.get(&edge.from).expect("from node missing");
-        let to_layout = nodes.get(&edge.to).expect("to node missing");
+        let (Some(from_layout), Some(to_layout)) =
+            (nodes.get(&edge.from), nodes.get(&edge.to))
+        else {
+            continue;
+        };
         let temp_from = from_layout.anchor_subgraph.and_then(|idx| {
             subgraphs
                 .get(idx)
@@ -6042,8 +6117,11 @@ fn compute_flowchart_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig)
         } else {
             0.0
         };
-        let from_layout = nodes.get(&edge.from).expect("from node missing");
-        let to_layout = nodes.get(&edge.to).expect("to node missing");
+        let (Some(from_layout), Some(to_layout)) =
+            (nodes.get(&edge.from), nodes.get(&edge.to))
+        else {
+            continue;
+        };
         let temp_from = from_layout.anchor_subgraph.and_then(|idx| {
             subgraphs
                 .get(idx)
@@ -6056,10 +6134,9 @@ fn compute_flowchart_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig)
         });
         let from = temp_from.as_ref().unwrap_or(from_layout);
         let to = temp_to.as_ref().unwrap_or(to_layout);
-        let port_info = edge_ports
-            .get(*idx)
-            .copied()
-            .expect("edge port info missing");
+        let Some(port_info) = edge_ports.get(*idx).copied() else {
+            continue;
+        };
         let route_ctx = RouteContext {
             from_id: &edge.from,
             to_id: &edge.to,
@@ -6737,7 +6814,9 @@ fn compute_sequence_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) 
     let mut max_label_width: f32 = 0.0;
     let mut max_label_height: f32 = 0.0;
     for id in &participants {
-        let node = graph.nodes.get(id).expect("participant missing");
+        let Some(node) = graph.nodes.get(id) else {
+            continue;
+        };
         let label = measure_label(&node.label, theme, config);
         max_label_width = max_label_width.max(label.width);
         max_label_height = max_label_height.max(label.height);
@@ -6752,7 +6831,9 @@ fn compute_sequence_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) 
     let margin = 8.0;
     let mut cursor_x = margin;
     for id in &participants {
-        let node = graph.nodes.get(id).expect("participant missing");
+        let Some(node) = graph.nodes.get(id) else {
+            continue;
+        };
         let label = label_blocks.get(id).cloned().unwrap_or_else(|| TextBlock {
             lines: vec![id.clone()],
             width: 0.0,
@@ -6862,8 +6943,9 @@ fn compute_sequence_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) 
     }
 
     for (idx, edge) in graph.edges.iter().enumerate() {
-        let from = nodes.get(&edge.from).expect("from node missing");
-        let to = nodes.get(&edge.to).expect("to node missing");
+        let (Some(from), Some(to)) = (nodes.get(&edge.from), nodes.get(&edge.to)) else {
+            continue;
+        };
         let y = message_ys.get(idx).copied().unwrap_or(message_cursor);
         let label = edge.label.as_ref().map(|l| measure_label(l, theme, config));
         let start_label = edge
@@ -11463,5 +11545,129 @@ mod tests {
             route_edge_with_grid(&ctx, &grid, None, start_stub, end_stub).expect("grid route");
         let hits = path_obstacle_intersections(&points, &obstacles, &from.id, &to.id);
         assert_eq!(hits, 0, "grid path should avoid obstacle");
+    }
+
+    #[test]
+    fn sequence_diagram_layout_has_lifelines() {
+        let input = "sequenceDiagram\n    Alice->>Bob: Hello\n    Bob-->>Alice: Hi";
+        let parsed = crate::parser::parse_mermaid(input).unwrap();
+        let layout = compute_layout(
+            &parsed.graph,
+            &crate::theme::Theme::modern(),
+            &LayoutConfig::default(),
+        );
+        assert!(
+            !layout.lifelines.is_empty(),
+            "sequence diagram should produce lifelines"
+        );
+        assert!(
+            !layout.edges.is_empty(),
+            "sequence diagram should produce edges"
+        );
+    }
+
+    #[test]
+    fn pie_chart_layout_has_slices() {
+        let input = "pie\n    \"Dogs\" : 386\n    \"Cats\" : 85\n    \"Rats\" : 15";
+        let parsed = crate::parser::parse_mermaid(input).unwrap();
+        let mut config = LayoutConfig::default();
+        config.pie.render_mode = crate::config::PieRenderMode::Chart;
+        let layout = compute_layout(
+            &parsed.graph,
+            &crate::theme::Theme::modern(),
+            &config,
+        );
+        assert_eq!(layout.pie_slices.len(), 3, "should have 3 slices");
+        assert!(layout.pie_radius > 0.0, "radius should be positive");
+    }
+
+    #[test]
+    fn class_diagram_layout_produces_nodes() {
+        let input = "classDiagram\n    class Animal {\n      +name: String\n    }\n    class Dog\n    Animal <|-- Dog";
+        let parsed = crate::parser::parse_mermaid(input).unwrap();
+        let layout = compute_layout(
+            &parsed.graph,
+            &crate::theme::Theme::modern(),
+            &LayoutConfig::default(),
+        );
+        assert!(
+            layout.nodes.contains_key("Animal"),
+            "should layout Animal node"
+        );
+        assert!(
+            layout.nodes.contains_key("Dog"),
+            "should layout Dog node"
+        );
+        assert!(!layout.edges.is_empty(), "should have inheritance edge");
+    }
+
+    #[test]
+    fn state_diagram_layout_produces_nodes() {
+        let input = "stateDiagram-v2\n    [*] --> Idle\n    Idle --> Active\n    Active --> [*]";
+        let parsed = crate::parser::parse_mermaid(input).unwrap();
+        let layout = compute_layout(
+            &parsed.graph,
+            &crate::theme::Theme::modern(),
+            &LayoutConfig::default(),
+        );
+        assert!(!layout.nodes.is_empty(), "should layout state nodes");
+        assert!(!layout.edges.is_empty(), "should have transition edges");
+    }
+
+    #[test]
+    fn top_down_nodes_arranged_vertically() {
+        let mut graph = Graph::new();
+        graph.direction = Direction::TopDown;
+        graph.ensure_node("A", Some("A".to_string()), Some(NodeShape::Rectangle));
+        graph.ensure_node("B", Some("B".to_string()), Some(NodeShape::Rectangle));
+        graph.edges.push(crate::ir::Edge {
+            from: "A".to_string(),
+            to: "B".to_string(),
+            label: None,
+            start_label: None,
+            end_label: None,
+            directed: true,
+            arrow_start: false,
+            arrow_end: true,
+            arrow_start_kind: None,
+            arrow_end_kind: None,
+            start_decoration: None,
+            end_decoration: None,
+            style: crate::ir::EdgeStyle::Solid,
+        });
+        let layout = compute_layout(&graph, &Theme::modern(), &LayoutConfig::default());
+        let a = layout.nodes.get("A").unwrap();
+        let b = layout.nodes.get("B").unwrap();
+        assert!(
+            b.y > a.y,
+            "B should be below A in top-down layout (A.y={}, B.y={})",
+            a.y,
+            b.y
+        );
+    }
+
+    #[test]
+    fn missing_edge_node_does_not_panic() {
+        let mut graph = Graph::new();
+        graph.ensure_node("A", Some("A".to_string()), Some(NodeShape::Rectangle));
+        // Edge references non-existent node "Z"
+        graph.edges.push(crate::ir::Edge {
+            from: "A".to_string(),
+            to: "Z".to_string(),
+            label: None,
+            start_label: None,
+            end_label: None,
+            directed: true,
+            arrow_start: false,
+            arrow_end: true,
+            arrow_start_kind: None,
+            arrow_end_kind: None,
+            start_decoration: None,
+            end_decoration: None,
+            style: crate::ir::EdgeStyle::Solid,
+        });
+        // Should not panic thanks to our graceful continue
+        let layout = compute_layout(&graph, &Theme::modern(), &LayoutConfig::default());
+        assert!(layout.nodes.contains_key("A"));
     }
 }

@@ -1439,7 +1439,8 @@ fn simplify_collinear_points(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
     let mut result = vec![points[0]];
 
     for i in 1..points.len() - 1 {
-        let prev = result.last().unwrap();
+        // SAFETY: result always contains at least points[0]
+        let prev = result.last().expect("result is non-empty");
         let curr = points[i];
         let next = points[i + 1];
 
@@ -1453,7 +1454,10 @@ fn simplify_collinear_points(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
         }
     }
 
-    result.push(*points.last().unwrap());
+    // points.len() > 2 is guaranteed by the early return above
+    if let Some(&last) = points.last() {
+        result.push(last);
+    }
     result
 }
 
@@ -1493,7 +1497,10 @@ fn smooth_corner_points(points: &[(f32, f32)], radius: f32) -> Vec<(f32, f32)> {
         out.push(after);
     }
 
-    out.push(*points.last().unwrap());
+    // points.len() >= 3 is guaranteed by the early return above
+    if let Some(&last) = points.last() {
+        out.push(last);
+    }
     out
 }
 
@@ -5189,7 +5196,8 @@ pub fn write_output_png(
     let mut opt = usvg::Options {
         font_family: primary_font(&theme.font_family),
         default_size: usvg::Size::from_wh(render_cfg.width, render_cfg.height)
-            .unwrap_or(usvg::Size::from_wh(800.0, 600.0).unwrap()),
+            .or_else(|| usvg::Size::from_wh(800.0, 600.0))
+            .expect("fallback 800x600 size is always valid"),
         ..Default::default()
     };
 

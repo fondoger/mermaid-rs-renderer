@@ -1,3 +1,10 @@
+//! Mermaid syntax parser.
+//!
+//! The main entry point is [`parse_mermaid`], which auto-detects the diagram
+//! type and returns a [`ParseOutput`] containing the intermediate
+//! representation ([`Graph`](crate::ir::Graph)) and any inline `%%{init}%%`
+//! configuration.
+
 use crate::ir::{DiagramKind, Direction, Graph, NodeStyle, Subgraph};
 use anyhow::Result;
 use once_cell::sync::Lazy;
@@ -37,12 +44,19 @@ static ARROW_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"<[-.=ox]*[-=]+[-.=ox]*>|<[-.=ox]*[-=]+|[-.=ox]*[-=]+>|[-.=ox]*[-=]+").unwrap()
 });
 
+/// The result of parsing a Mermaid diagram source string.
 #[derive(Debug, Default)]
 pub struct ParseOutput {
+    /// The intermediate representation of the parsed diagram.
     pub graph: Graph,
+    /// Inline configuration extracted from `%%{init: …}%%` directives, if any.
     pub init_config: Option<serde_json::Value>,
 }
 
+/// Parse a Mermaid diagram source string into its intermediate representation.
+///
+/// Automatically detects the diagram type from the first non-comment line and
+/// dispatches to the appropriate diagram-specific parser.
 pub fn parse_mermaid(input: &str) -> Result<ParseOutput> {
     match detect_diagram_kind(input) {
         DiagramKind::Class => parse_class_diagram(input),
@@ -5257,7 +5271,10 @@ fn parse_class_line(line: &str, graph: &mut Graph) {
     if parts.len() < 3 {
         return;
     }
-    let class_name = parts.last().unwrap().to_string();
+    let class_name = match parts.last() {
+        Some(name) => name.to_string(),
+        None => return,
+    };
     let class_names: Vec<String> = class_name
         .split(',')
         .map(|name| name.trim().to_string())
