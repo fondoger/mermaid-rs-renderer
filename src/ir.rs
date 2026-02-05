@@ -344,6 +344,35 @@ pub struct SequenceBox {
     pub participants: Vec<String>,
 }
 
+/// All parsed data specific to sequence diagrams.
+#[derive(Debug, Clone, Default)]
+pub struct SequenceData {
+    /// Ordered participant IDs.
+    pub participants: Vec<String>,
+    pub frames: Vec<SequenceFrame>,
+    pub notes: Vec<SequenceNote>,
+    pub activations: Vec<SequenceActivation>,
+    /// Starting number for `autonumber`, if enabled.
+    pub autonumber: Option<usize>,
+    pub boxes: Vec<SequenceBox>,
+}
+
+/// All parsed data specific to pie chart diagrams.
+#[derive(Debug, Clone, Default)]
+pub struct PieData {
+    pub slices: Vec<PieSlice>,
+    pub title: Option<String>,
+    pub show_data: bool,
+}
+
+/// All parsed data specific to Gantt chart diagrams.
+#[derive(Debug, Clone, Default)]
+pub struct GanttData {
+    pub tasks: Vec<GanttTask>,
+    pub title: Option<String>,
+    pub sections: Vec<String>,
+}
+
 /// A note annotation attached to a state diagram state.
 #[derive(Debug, Clone)]
 pub struct StateNote {
@@ -495,31 +524,16 @@ pub struct Graph {
     pub edges: Vec<Edge>,
     pub subgraphs: Vec<Subgraph>,
 
-    // -- Sequence diagram data --
-    /// Ordered participant IDs for sequence diagrams.
-    pub sequence_participants: Vec<String>,
-    pub sequence_frames: Vec<SequenceFrame>,
-    pub sequence_notes: Vec<SequenceNote>,
-    pub sequence_activations: Vec<SequenceActivation>,
-    /// Starting number for `autonumber`, if enabled.
-    pub sequence_autonumber: Option<usize>,
-    pub sequence_boxes: Vec<SequenceBox>,
+    // -- Diagram-specific data (grouped into sub-structs) --
+    pub sequence: SequenceData,
+    pub pie: PieData,
+    pub gantt: GanttData,
 
     // -- State diagram data --
     pub state_notes: Vec<StateNote>,
 
-    // -- Pie chart data --
-    pub pie_slices: Vec<PieSlice>,
-    pub pie_title: Option<String>,
-    pub pie_show_data: bool,
-
     // -- Quadrant chart data --
     pub quadrant: QuadrantData,
-
-    // -- Gantt chart data --
-    pub gantt_tasks: Vec<GanttTask>,
-    pub gantt_title: Option<String>,
-    pub gantt_sections: Vec<String>,
 
     // -- Journey diagram data --
     pub journey_title: Option<String>,
@@ -680,6 +694,13 @@ pub struct BlockNode {
 }
 
 impl Graph {
+    /// Create a new graph for the given diagram kind.
+    pub fn with_kind(kind: DiagramKind) -> Self {
+        let mut g = Self::new();
+        g.kind = kind;
+        g
+    }
+
     pub fn new() -> Self {
         Self {
             kind: DiagramKind::Flowchart,
@@ -688,20 +709,11 @@ impl Graph {
             node_order: HashMap::new(),
             edges: Vec::new(),
             subgraphs: Vec::new(),
-            sequence_participants: Vec::new(),
-            sequence_frames: Vec::new(),
-            sequence_notes: Vec::new(),
-            sequence_activations: Vec::new(),
-            sequence_autonumber: None,
-            sequence_boxes: Vec::new(),
+            sequence: SequenceData::default(),
+            pie: PieData::default(),
+            gantt: GanttData::default(),
             state_notes: Vec::new(),
-            pie_slices: Vec::new(),
-            pie_title: None,
-            pie_show_data: false,
             quadrant: QuadrantData::default(),
-            gantt_tasks: Vec::new(),
-            gantt_title: None,
-            gantt_sections: Vec::new(),
             journey_title: None,
             gitgraph: GitGraphData::default(),
             class_defs: HashMap::new(),

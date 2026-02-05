@@ -156,18 +156,17 @@ pub fn render_svg(layout: &Layout, theme: &Theme, config: &LayoutConfig) -> Stri
         return svg;
     }
 
-    let mut colors = Vec::new();
-    colors.push(theme.line_color.clone());
+    let mut colors = vec![theme.line_color.clone()];
+    let mut color_ids: HashMap<String, usize> = HashMap::new();
+    color_ids.insert(theme.line_color.clone(), 0);
     for edge in &layout.edges {
         if let Some(color) = &edge.override_style.stroke
-            && !colors.contains(color)
+            && !color_ids.contains_key(color)
         {
+            let idx = colors.len();
+            color_ids.insert(color.clone(), idx);
             colors.push(color.clone());
         }
-    }
-    let mut color_ids: HashMap<String, usize> = HashMap::new();
-    for (idx, color) in colors.iter().enumerate() {
-        color_ids.insert(color.clone(), idx);
     }
 
     svg.push_str("<defs>");
@@ -5184,6 +5183,28 @@ pub fn write_output_svg(svg: &str, output: Option<&Path>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Write PNG output, returning an error if the `png` feature is disabled.
+///
+/// This function is always available so callers don't need `#[cfg]` guards.
+pub fn try_write_png(
+    svg: &str,
+    output: &Path,
+    render_cfg: &RenderConfig,
+    theme: &Theme,
+) -> Result<()> {
+    #[cfg(feature = "png")]
+    {
+        write_output_png(svg, output, render_cfg, theme)
+    }
+    #[cfg(not(feature = "png"))]
+    {
+        let _ = (svg, output, render_cfg, theme);
+        Err(anyhow::anyhow!(
+            "PNG output requires the 'png' feature. Rebuild with: cargo build --features png"
+        ))
+    }
 }
 
 #[cfg(feature = "png")]

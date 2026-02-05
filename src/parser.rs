@@ -175,7 +175,15 @@ fn detect_diagram_kind(input: &str) -> DiagramKind {
     DiagramKind::Flowchart
 }
 
-fn preprocess_input(input: &str) -> Result<(Vec<String>, Option<serde_json::Value>)> {
+/// Extract `%%{init}%%` config and strip comments from input lines.
+///
+/// When `keep_indent` is true, original indentation is preserved (for
+/// indentation-sensitive diagrams like mindmap and kanban). Otherwise lines
+/// are trimmed and only the comment-stripped content is returned.
+fn preprocess_lines(
+    input: &str,
+    keep_indent: bool,
+) -> Result<(Vec<String>, Option<serde_json::Value>)> {
     let mut init_config: Option<serde_json::Value> = None;
     let mut lines = Vec::new();
 
@@ -197,51 +205,34 @@ fn preprocess_input(input: &str) -> Result<(Vec<String>, Option<serde_json::Valu
         if trimmed_line.starts_with("%%") {
             continue;
         }
-        let without_comment = strip_trailing_comment(trimmed_line);
-        if without_comment.is_empty() {
-            continue;
+        if keep_indent {
+            let without_comment = strip_trailing_comment_keep_indent(raw_line);
+            if without_comment.trim().is_empty() {
+                continue;
+            }
+            lines.push(without_comment);
+        } else {
+            let without_comment = strip_trailing_comment(trimmed_line);
+            if without_comment.is_empty() {
+                continue;
+            }
+            lines.push(without_comment.to_string());
         }
-        lines.push(without_comment.to_string());
     }
 
     Ok((lines, init_config))
+}
+
+fn preprocess_input(input: &str) -> Result<(Vec<String>, Option<serde_json::Value>)> {
+    preprocess_lines(input, false)
 }
 
 fn preprocess_input_keep_indent(input: &str) -> Result<(Vec<String>, Option<serde_json::Value>)> {
-    let mut init_config: Option<serde_json::Value> = None;
-    let mut lines = Vec::new();
-
-    for raw_line in input.lines() {
-        let trimmed_line = raw_line.trim();
-        if trimmed_line.is_empty() {
-            continue;
-        }
-        if let Some(caps) = INIT_RE.captures(trimmed_line) {
-            if let Some(json_str) = caps.get(1).map(|m| m.as_str()) {
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                    init_config = Some(value);
-                } else if let Ok(value) = json5::from_str::<serde_json::Value>(json_str) {
-                    init_config = Some(value);
-                }
-            }
-            continue;
-        }
-        if trimmed_line.starts_with("%%") {
-            continue;
-        }
-        let without_comment = strip_trailing_comment_keep_indent(raw_line);
-        if without_comment.trim().is_empty() {
-            continue;
-        }
-        lines.push(without_comment);
-    }
-
-    Ok((lines, init_config))
+    preprocess_lines(input, true)
 }
 
 fn parse_flowchart(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Flowchart;
+    let mut graph = Graph::with_kind(DiagramKind::Flowchart);
     let mut subgraph_stack: Vec<usize> = Vec::new();
 
     let (lines, init_config) = preprocess_input(input)?;
@@ -291,35 +282,7 @@ fn parse_flowchart(input: &str) -> Result<ParseOutput> {
                 continue;
             }
 
-            if line.starts_with("classDef") {
-                parse_class_def(&line, &mut graph);
-                continue;
-            }
-
-            if line.starts_with("class ") {
-                parse_class_line(&line, &mut graph);
-                continue;
-            }
-
-            if line.starts_with("style ") {
-                parse_style_line(&line, &mut graph);
-                continue;
-            }
-
-            if line.starts_with("linkStyle") {
-                parse_link_style_line(&line, &mut graph);
-                continue;
-            }
-
-            if let Some((id, link)) = parse_click_line(&line) {
-                graph.node_links.insert(id, link);
-                continue;
-            }
-
-            if line.starts_with("accTitle")
-                || line.starts_with("accDescr")
-                || line.starts_with("title ")
-            {
+            if parse_common_directives(&line, &mut graph) {
                 continue;
             }
 
@@ -1130,8 +1093,7 @@ fn split_label(input: &str) -> (String, Option<String>) {
 }
 
 fn parse_class_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Class;
+    let mut graph = Graph::with_kind(DiagramKind::Class);
     graph.direction = Direction::TopDown;
     let (lines, init_config) = preprocess_input(input)?;
 
@@ -1426,8 +1388,7 @@ fn parse_er_relation_line(
 }
 
 fn parse_er_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Er;
+    let mut graph = Graph::with_kind(DiagramKind::Er);
     graph.direction = Direction::TopDown;
     let (lines, init_config) = preprocess_input(input)?;
 
@@ -1541,8 +1502,7 @@ fn parse_er_diagram(input: &str) -> Result<ParseOutput> {
 }
 
 fn parse_pie_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Pie;
+    let mut graph = Graph::with_kind(DiagramKind::Pie);
     let (lines, init_config) = preprocess_input(input)?;
 
     for raw_line in lines {
@@ -1553,7 +1513,7 @@ fn parse_pie_diagram(input: &str) -> Result<ParseOutput> {
         let lower = line.to_ascii_lowercase();
         if lower.starts_with("pie") {
             if lower.contains("showdata") {
-                graph.pie_show_data = true;
+                graph.pie.show_data = true;
             }
             // Check for title on the same line: "pie title My Title"
             if let Some(title_pos) = lower.find("title") {
@@ -1561,25 +1521,25 @@ fn parse_pie_diagram(input: &str) -> Result<ParseOutput> {
                 if let Some(title) = line.get(title_start..) {
                     let title = title.trim();
                     if !title.is_empty() {
-                        graph.pie_title = Some(title.to_string());
+                        graph.pie.title = Some(title.to_string());
                     }
                 }
             }
             continue;
         }
         if lower.starts_with("showdata") {
-            graph.pie_show_data = true;
+            graph.pie.show_data = true;
             continue;
         }
         if lower.starts_with("title") {
             let title = line.get(5..).unwrap_or("").trim();
             if !title.is_empty() {
-                graph.pie_title = Some(title.to_string());
+                graph.pie.title = Some(title.to_string());
             }
             continue;
         }
         if let Some((label, value)) = parse_pie_slice_line(line) {
-            graph.pie_slices.push(crate::ir::PieSlice { label, value });
+            graph.pie.slices.push(crate::ir::PieSlice { label, value });
         }
     }
 
@@ -1601,8 +1561,7 @@ fn parse_pie_slice_line(line: &str) -> Option<(String, f32)> {
 }
 
 fn parse_mindmap_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Mindmap;
+    let mut graph = Graph::with_kind(DiagramKind::Mindmap);
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input_keep_indent(input)?;
     let mut stack: Vec<String> = Vec::new();
@@ -1811,8 +1770,7 @@ fn sanitize_id(input: &str) -> String {
 }
 
 fn parse_journey_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Journey;
+    let mut graph = Graph::with_kind(DiagramKind::Journey);
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input(input)?;
 
@@ -1917,8 +1875,7 @@ fn parse_journey_task_line(line: &str) -> Option<(String, Option<f32>, Vec<Strin
 }
 
 fn parse_timeline_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Timeline;
+    let mut graph = Graph::with_kind(DiagramKind::Timeline);
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input(input)?;
 
@@ -2009,8 +1966,7 @@ fn parse_timeline_diagram(input: &str) -> Result<ParseOutput> {
 }
 
 fn parse_gantt_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Gantt;
+    let mut graph = Graph::with_kind(DiagramKind::Gantt);
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input(input)?;
 
@@ -2030,7 +1986,7 @@ fn parse_gantt_diagram(input: &str) -> Result<ParseOutput> {
         if lower.starts_with("title") {
             let title = line.get(5..).unwrap_or("").trim();
             if !title.is_empty() {
-                graph.gantt_title = Some(title.to_string());
+                graph.gantt.title = Some(title.to_string());
             }
             continue;
         }
@@ -2054,7 +2010,7 @@ fn parse_gantt_diagram(input: &str) -> Result<ParseOutput> {
             });
             current_section = Some(graph.subgraphs.len() - 1);
             current_section_name = Some(label.to_string());
-            graph.gantt_sections.push(label.to_string());
+            graph.gantt.sections.push(label.to_string());
             last_task = None;
             continue;
         }
@@ -2075,7 +2031,7 @@ fn parse_gantt_diagram(input: &str) -> Result<ParseOutput> {
 
             // Add to gantt_tasks
             let (start, duration) = extract_gantt_timing(&details);
-            graph.gantt_tasks.push(crate::ir::GanttTask {
+            graph.gantt.tasks.push(crate::ir::GanttTask {
                 id: node_id.clone(),
                 label: label.to_string(),
                 start,
@@ -2271,8 +2227,7 @@ fn normalize_requirement_attr(line: &str) -> String {
 }
 
 fn parse_requirement_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Requirement;
+    let mut graph = Graph::with_kind(DiagramKind::Requirement);
     graph.direction = Direction::TopDown;
     let (lines, init_config) = preprocess_input(input)?;
 
@@ -2403,8 +2358,7 @@ fn parse_requirement_relation_line(line: &str) -> Option<(String, String, String
 }
 
 fn parse_gitgraph_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::GitGraph;
+    let mut graph = Graph::with_kind(DiagramKind::GitGraph);
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input(input)?;
 
@@ -2723,8 +2677,7 @@ fn extract_gitgraph_attr(line: &str, key: &str) -> Option<String> {
 }
 
 fn parse_c4_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::C4;
+    let mut graph = Graph::with_kind(DiagramKind::C4);
     graph.direction = Direction::LeftRight;
     graph.c4 = crate::ir::C4Data::default();
     graph.c4.boundaries.push(crate::ir::C4Boundary {
@@ -3256,8 +3209,7 @@ fn c4_rel_kind_for(func_lower: &str) -> Option<crate::ir::C4RelKind> {
 }
 
 fn parse_sankey_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Sankey;
+    let mut graph = Graph::with_kind(DiagramKind::Sankey);
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input(input)?;
 
@@ -3308,8 +3260,7 @@ fn parse_sankey_diagram(input: &str) -> Result<ParseOutput> {
 }
 
 fn parse_quadrant_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Quadrant;
+    let mut graph = Graph::with_kind(DiagramKind::Quadrant);
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input(input)?;
 
@@ -3397,8 +3348,7 @@ fn parse_quadrant_point_coords(line: &str) -> Option<(String, f32, f32)> {
 }
 
 fn parse_zenuml_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::ZenUML;
+    let mut graph = Graph::with_kind(DiagramKind::ZenUML);
     let (lines, init_config) = preprocess_input(input)?;
     let mut order: Vec<String> = Vec::new();
     let labels: HashMap<String, String> = HashMap::new();
@@ -3439,7 +3389,7 @@ fn parse_zenuml_diagram(input: &str) -> Result<ParseOutput> {
         }
     }
 
-    graph.sequence_participants = order;
+    graph.sequence.participants = order;
 
     Ok(ParseOutput { graph, init_config })
 }
@@ -3484,8 +3434,7 @@ fn parse_zenuml_message_line(
 }
 
 fn parse_block_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Block;
+    let mut graph = Graph::with_kind(DiagramKind::Block);
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input(input)?;
     let mut block = crate::ir::BlockDiagram::default();
@@ -3615,8 +3564,7 @@ fn parse_block_diagram(input: &str) -> Result<ParseOutput> {
 }
 
 fn parse_packet_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Packet;
+    let mut graph = Graph::with_kind(DiagramKind::Packet);
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input(input)?;
     let mut last_node: Option<String> = None;
@@ -3672,8 +3620,7 @@ fn parse_packet_diagram(input: &str) -> Result<ParseOutput> {
 }
 
 fn parse_kanban_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Kanban;
+    let mut graph = Graph::with_kind(DiagramKind::Kanban);
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input_keep_indent(input)?;
     let mut current_section: Option<usize> = None;
@@ -3731,8 +3678,7 @@ fn parse_kanban_diagram(input: &str) -> Result<ParseOutput> {
 }
 
 fn parse_architecture_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Architecture;
+    let mut graph = Graph::with_kind(DiagramKind::Architecture);
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input(input)?;
     let mut groups: HashMap<String, usize> = HashMap::new();
@@ -3846,8 +3792,7 @@ fn strip_arch_port(token: &str) -> &str {
 }
 
 fn parse_radar_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Radar;
+    let mut graph = Graph::with_kind(DiagramKind::Radar);
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input(input)?;
     let mut axes: Vec<String> = Vec::new();
@@ -3913,8 +3858,7 @@ fn parse_radar_curve(line: &str) -> Option<(String, Vec<String>)> {
 }
 
 fn parse_treemap_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Treemap;
+    let mut graph = Graph::with_kind(DiagramKind::Treemap);
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input_keep_indent(input)?;
     let mut stack: Vec<String> = Vec::new();
@@ -4010,8 +3954,7 @@ fn parse_treemap_item(line: &str) -> (String, Option<String>) {
 }
 
 fn parse_xy_chart_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::XYChart;
+    let mut graph = Graph::with_kind(DiagramKind::XYChart);
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input(input)?;
 
@@ -4184,8 +4127,7 @@ fn parse_xy_series_line(line: &str) -> Option<(String, Vec<String>)> {
 }
 
 fn parse_state_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::State;
+    let mut graph = Graph::with_kind(DiagramKind::State);
     let (lines, init_config) = preprocess_input(input)?;
 
     let mut labels: HashMap<String, String> = HashMap::new();
@@ -4275,18 +4217,7 @@ fn parse_state_diagram(input: &str) -> Result<ParseOutput> {
                 continue;
             }
 
-            if line.starts_with("classDef") {
-                parse_class_def(line, &mut graph);
-                continue;
-            }
-
-            if line.starts_with("class ") {
-                parse_class_line(line, &mut graph);
-                continue;
-            }
-
-            if line.starts_with("style ") {
-                parse_style_line(line, &mut graph);
+            if parse_common_directives(line, &mut graph) {
                 continue;
             }
 
@@ -4484,8 +4415,7 @@ fn parse_state_diagram(input: &str) -> Result<ParseOutput> {
 }
 
 fn parse_sequence_diagram(input: &str) -> Result<ParseOutput> {
-    let mut graph = Graph::new();
-    graph.kind = DiagramKind::Sequence;
+    let mut graph = Graph::with_kind(DiagramKind::Sequence);
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input(input)?;
 
@@ -4655,7 +4585,7 @@ fn parse_sequence_diagram(input: &str) -> Result<ParseOutput> {
                 frame.end_idx = end_idx;
                 frames.push(frame);
             } else if let Some(seq_box) = open_boxes.pop() {
-                graph.sequence_boxes.push(seq_box);
+                graph.sequence.boxes.push(seq_box);
             }
             continue;
         }
@@ -4667,7 +4597,7 @@ fn parse_sequence_diagram(input: &str) -> Result<ParseOutput> {
                 }
                 ensure_sequence_node(&mut graph, &labels, id, None);
             }
-            graph.sequence_notes.push(crate::ir::SequenceNote {
+            graph.sequence.notes.push(crate::ir::SequenceNote {
                 position,
                 participants,
                 label,
@@ -4685,7 +4615,7 @@ fn parse_sequence_diagram(input: &str) -> Result<ParseOutput> {
                 }
                 ensure_sequence_node(&mut graph, &labels, &id, None);
                 graph
-                    .sequence_activations
+                    .sequence.activations
                     .push(crate::ir::SequenceActivation {
                         participant: id,
                         index: graph.edges.len(),
@@ -4703,7 +4633,7 @@ fn parse_sequence_diagram(input: &str) -> Result<ParseOutput> {
                 }
                 ensure_sequence_node(&mut graph, &labels, &id, None);
                 graph
-                    .sequence_activations
+                    .sequence.activations
                     .push(crate::ir::SequenceActivation {
                         participant: id,
                         index: graph.edges.len(),
@@ -4717,14 +4647,14 @@ fn parse_sequence_diagram(input: &str) -> Result<ParseOutput> {
             if parts.len() >= 2 {
                 let token = parts[1].to_ascii_lowercase();
                 if token == "off" || token == "stop" || token == "disable" {
-                    graph.sequence_autonumber = None;
+                    graph.sequence.autonumber = None;
                 } else if let Ok(start) = parts[1].parse::<usize>() {
-                    graph.sequence_autonumber = Some(start);
+                    graph.sequence.autonumber = Some(start);
                 } else {
-                    graph.sequence_autonumber = Some(1);
+                    graph.sequence.autonumber = Some(1);
                 }
             } else {
-                graph.sequence_autonumber = Some(1);
+                graph.sequence.autonumber = Some(1);
             }
             continue;
         }
@@ -4758,7 +4688,7 @@ fn parse_sequence_diagram(input: &str) -> Result<ParseOutput> {
             {
                 let participant = graph.edges[last].to.clone();
                 graph
-                    .sequence_activations
+                    .sequence.activations
                     .push(crate::ir::SequenceActivation {
                         participant,
                         index: last,
@@ -4777,11 +4707,11 @@ fn parse_sequence_diagram(input: &str) -> Result<ParseOutput> {
         frames.push(frame);
     }
     while let Some(seq_box) = open_boxes.pop() {
-        graph.sequence_boxes.push(seq_box);
+        graph.sequence.boxes.push(seq_box);
     }
 
-    graph.sequence_participants = order;
-    graph.sequence_frames = frames;
+    graph.sequence.participants = order;
+    graph.sequence.frames = frames;
     Ok(ParseOutput { graph, init_config })
 }
 
@@ -5251,6 +5181,41 @@ fn parse_direction_line(line: &str) -> Option<Direction> {
         return Direction::from_token(parts[1]);
     }
     None
+}
+
+/// Try to handle common styling/interaction directives that appear in many
+/// diagram types: `classDef`, `class`, `style`, `linkStyle`, `click`,
+/// `accTitle`, `accDescr`, `title`.
+///
+/// Returns `true` if the line was consumed (caller should `continue`).
+fn parse_common_directives(line: &str, graph: &mut Graph) -> bool {
+    if line.starts_with("classDef") {
+        parse_class_def(line, graph);
+        return true;
+    }
+    if line.starts_with("class ") {
+        parse_class_line(line, graph);
+        return true;
+    }
+    if line.starts_with("style ") {
+        parse_style_line(line, graph);
+        return true;
+    }
+    if line.starts_with("linkStyle") {
+        parse_link_style_line(line, graph);
+        return true;
+    }
+    if let Some((id, link)) = parse_click_line(line) {
+        graph.node_links.insert(id, link);
+        return true;
+    }
+    if line.starts_with("accTitle")
+        || line.starts_with("accDescr")
+        || line.starts_with("title ")
+    {
+        return true;
+    }
+    false
 }
 
 fn parse_class_def(line: &str, graph: &mut Graph) {
@@ -5965,11 +5930,11 @@ mod tests {
         let input = "pie showData\n  title Pets\n  \"Dogs\" : 10\n  Cats : 5";
         let parsed = parse_mermaid(input).unwrap();
         assert_eq!(parsed.graph.kind, DiagramKind::Pie);
-        assert!(parsed.graph.pie_show_data);
-        assert_eq!(parsed.graph.pie_title.as_deref(), Some("Pets"));
-        assert_eq!(parsed.graph.pie_slices.len(), 2);
-        assert_eq!(parsed.graph.pie_slices[0].label, "Dogs");
-        assert_eq!(parsed.graph.pie_slices[0].value, 10.0);
+        assert!(parsed.graph.pie.show_data);
+        assert_eq!(parsed.graph.pie.title.as_deref(), Some("Pets"));
+        assert_eq!(parsed.graph.pie.slices.len(), 2);
+        assert_eq!(parsed.graph.pie.slices[0].label, "Dogs");
+        assert_eq!(parsed.graph.pie.slices[0].value, 10.0);
     }
 
     #[test]
@@ -6067,7 +6032,7 @@ mod tests {
         let input = "zenuml\n  Alice->Bob: Hello\n  Bob-->Alice: Reply";
         let parsed = parse_mermaid(input).unwrap();
         assert_eq!(parsed.graph.kind, DiagramKind::ZenUML);
-        assert_eq!(parsed.graph.sequence_participants.len(), 2);
+        assert_eq!(parsed.graph.sequence.participants.len(), 2);
         assert_eq!(parsed.graph.edges.len(), 2);
     }
 
@@ -6196,9 +6161,9 @@ mod tests {
         let input = "sequenceDiagram\nparticipant Alice as A\nparticipant Bob\nA->>Bob: Hello\nBob-->>A: Hi";
         let parsed = parse_mermaid(input).unwrap();
         assert_eq!(parsed.graph.kind, DiagramKind::Sequence);
-        assert_eq!(parsed.graph.sequence_participants.len(), 2);
-        assert_eq!(parsed.graph.sequence_participants[0], "A");
-        assert_eq!(parsed.graph.sequence_participants[1], "Bob");
+        assert_eq!(parsed.graph.sequence.participants.len(), 2);
+        assert_eq!(parsed.graph.sequence.participants[0], "A");
+        assert_eq!(parsed.graph.sequence.participants[1], "Bob");
         assert_eq!(parsed.graph.edges.len(), 2);
         assert_eq!(parsed.graph.edges[1].style, crate::ir::EdgeStyle::Dotted);
     }
@@ -6215,7 +6180,7 @@ mod tests {
     fn parse_sequence_autonumber_off() {
         let input = "sequenceDiagram\nautonumber off\nA->>B: ping";
         let parsed = parse_mermaid(input).unwrap();
-        assert!(parsed.graph.sequence_autonumber.is_none());
+        assert!(parsed.graph.sequence.autonumber.is_none());
     }
 
     #[test]
@@ -6224,8 +6189,8 @@ mod tests {
         let parsed = parse_mermaid(input).unwrap();
         assert_eq!(parsed.graph.kind, DiagramKind::Sequence);
         assert_eq!(parsed.graph.edges.len(), 3);
-        assert_eq!(parsed.graph.sequence_frames.len(), 1);
-        let frame = &parsed.graph.sequence_frames[0];
+        assert_eq!(parsed.graph.sequence.frames.len(), 1);
+        let frame = &parsed.graph.sequence.frames[0];
         assert_eq!(frame.sections.len(), 2);
         assert_eq!(frame.sections[0].label.as_deref(), Some("ok"));
         assert_eq!(frame.sections[0].start_idx, 1);
@@ -6240,8 +6205,8 @@ mod tests {
         let input =
             "sequenceDiagram\nA->>B: req\npar first\nB-->>A: yes\nand second\nB-->>A: no\nend";
         let parsed = parse_mermaid(input).unwrap();
-        assert_eq!(parsed.graph.sequence_frames.len(), 1);
-        let frame = &parsed.graph.sequence_frames[0];
+        assert_eq!(parsed.graph.sequence.frames.len(), 1);
+        let frame = &parsed.graph.sequence.frames[0];
         assert_eq!(frame.kind, crate::ir::SequenceFrameKind::Par);
         assert_eq!(frame.sections.len(), 2);
         assert_eq!(frame.sections[0].label.as_deref(), Some("first"));
@@ -6253,8 +6218,8 @@ mod tests {
         let input =
             "sequenceDiagram\nA->>B: req\ncritical ok\nB-->>A: yes\noption fail\nB-->>A: no\nend";
         let parsed = parse_mermaid(input).unwrap();
-        assert_eq!(parsed.graph.sequence_frames.len(), 1);
-        let frame = &parsed.graph.sequence_frames[0];
+        assert_eq!(parsed.graph.sequence.frames.len(), 1);
+        let frame = &parsed.graph.sequence.frames[0];
         assert_eq!(frame.kind, crate::ir::SequenceFrameKind::Critical);
         assert_eq!(frame.sections.len(), 2);
         assert_eq!(frame.sections[0].label.as_deref(), Some("ok"));
@@ -6265,8 +6230,8 @@ mod tests {
     fn parse_sequence_box() {
         let input = "sequenceDiagram\nbox Aqua Group\nparticipant A\nparticipant B\nend";
         let parsed = parse_mermaid(input).unwrap();
-        assert_eq!(parsed.graph.sequence_boxes.len(), 1);
-        let seq_box = &parsed.graph.sequence_boxes[0];
+        assert_eq!(parsed.graph.sequence.boxes.len(), 1);
+        let seq_box = &parsed.graph.sequence.boxes[0];
         assert_eq!(seq_box.color.as_deref(), Some("Aqua"));
         assert_eq!(seq_box.label.as_deref(), Some("Group"));
         assert_eq!(seq_box.participants.len(), 2);
@@ -6278,12 +6243,12 @@ mod tests {
     fn parse_sequence_notes() {
         let input = "sequenceDiagram\nparticipant Alice\nparticipant Bob\nAlice->>Bob: Hello\nNote over Alice,Bob: ping\nBob-->>Alice: Hi\nNote right of Bob: done";
         let parsed = parse_mermaid(input).unwrap();
-        assert_eq!(parsed.graph.sequence_notes.len(), 2);
-        let first = &parsed.graph.sequence_notes[0];
+        assert_eq!(parsed.graph.sequence.notes.len(), 2);
+        let first = &parsed.graph.sequence.notes[0];
         assert_eq!(first.index, 1);
         assert_eq!(first.label, "ping");
         assert_eq!(first.position, crate::ir::SequenceNotePosition::Over);
-        let second = &parsed.graph.sequence_notes[1];
+        let second = &parsed.graph.sequence.notes[1];
         assert_eq!(second.index, 2);
         assert_eq!(second.label, "done");
         assert_eq!(second.position, crate::ir::SequenceNotePosition::RightOf);

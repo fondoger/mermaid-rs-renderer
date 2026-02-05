@@ -153,9 +153,13 @@ struct FontFace {
 
 impl FontFace {
     fn new(data: Vec<u8>, index: u32, units_per_em: u16) -> Self {
-        let face = Face::parse(&data, index)
-            .ok()
-            .map(|parsed| unsafe { std::mem::transmute::<Face<'_>, Face<'static>>(parsed) });
+        let face = Face::parse(&data, index).ok().map(|parsed| {
+            // SAFETY: The parsed `Face` borrows from `data`, which is moved into
+            // `self._data` and kept alive for the entire lifetime of this `FontFace`.
+            // Transmuting to `'static` is sound because the backing allocation is
+            // never freed, moved, or reallocated while `face` is alive.
+            unsafe { std::mem::transmute::<Face<'_>, Face<'static>>(parsed) }
+        });
         let ascii_advances = face.as_ref().map(|parsed| {
             let mut advances = [0u16; 128];
             for byte in 0u8..=127 {

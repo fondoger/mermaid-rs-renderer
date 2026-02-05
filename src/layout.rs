@@ -3316,7 +3316,7 @@ fn compute_pie_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) -> La
     let pie_cfg = &config.pie;
     let mut slices = Vec::new();
     let mut legend = Vec::new();
-    let title_block = graph.pie_title.as_ref().map(|title| {
+    let title_block = graph.pie.title.as_ref().map(|title| {
         measure_label_with_font_size(
             title,
             theme.pie_title_text_size,
@@ -3328,11 +3328,12 @@ fn compute_pie_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) -> La
 
     let palette = pie_palette(theme);
     let total: f32 = graph
-        .pie_slices
+        .pie
+        .slices
         .iter()
         .map(|slice| slice.value.max(0.0))
         .sum();
-    let fallback_total = graph.pie_slices.len().max(1) as f32;
+    let fallback_total = graph.pie.slices.len().max(1) as f32;
     let total = if total > 0.0 { total } else { fallback_total };
 
     #[derive(Clone)]
@@ -3343,7 +3344,7 @@ fn compute_pie_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) -> La
     }
 
     let mut filtered: Vec<PieDatum> = Vec::new();
-    for (idx, slice) in graph.pie_slices.iter().enumerate() {
+    for (idx, slice) in graph.pie.slices.iter().enumerate() {
         let value = slice.value.max(0.0);
         let percent = if total > 0.0 {
             value / total * 100.0
@@ -3404,14 +3405,14 @@ fn compute_pie_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) -> La
 
     let mut legend_width: f32 = 0.0;
     let mut legend_items: Vec<(TextBlock, String)> = Vec::new();
-    for slice in &graph.pie_slices {
+    for slice in &graph.pie.slices {
         let percent = if total > 0.0 {
             slice.value.max(0.0) / total * 100.0
         } else {
             0.0
         };
         let value_text = format_pie_value(slice.value);
-        let label_text = if graph.pie_show_data {
+        let label_text = if graph.pie.show_data {
             format!("{} — {} ({:.0}%)", slice.label, value_text, percent)
         } else {
             format!("{} ({:.0}%)", slice.label, percent)
@@ -3446,7 +3447,7 @@ fn compute_pie_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) -> La
             label,
             color,
             marker_size: pie_cfg.legend_rect_size,
-            value: graph.pie_slices[idx].value,
+            value: graph.pie.slices[idx].value,
         });
     }
 
@@ -3639,14 +3640,15 @@ fn compute_gantt_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) -> 
     let default_duration = 3.0_f32;
 
     let title = graph
-        .gantt_title
+        .gantt
+        .title
         .as_ref()
         .map(|t| measure_label(t, theme, config));
     let title_height = title.as_ref().map(|t| t.height + padding).unwrap_or(0.0);
 
     let mut task_label_width = 0.0_f32;
     let mut section_label_width = 0.0_f32;
-    for task in &graph.gantt_tasks {
+    for task in &graph.gantt.tasks {
         let label = measure_label(&task.label, theme, config);
         task_label_width = task_label_width.max(label.width);
         if let Some(section) = task.section.as_ref() {
@@ -3671,7 +3673,7 @@ fn compute_gantt_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) -> 
 
     let mut parsed_starts: HashMap<String, f32> = HashMap::new();
     let mut origin: Option<f32> = None;
-    for task in &graph.gantt_tasks {
+    for task in &graph.gantt.tasks {
         if let Some(start) = task.start.as_deref().and_then(parse_gantt_date) {
             let start = start as f32;
             parsed_starts.insert(task.id.clone(), start);
@@ -3691,8 +3693,8 @@ fn compute_gantt_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) -> 
         f32,
         Option<crate::ir::GanttStatus>,
         Option<String>,
-    )> = Vec::with_capacity(graph.gantt_tasks.len());
-    for task in &graph.gantt_tasks {
+    )> = Vec::with_capacity(graph.gantt.tasks.len());
+    for task in &graph.gantt.tasks {
         let duration = task
             .duration
             .as_deref()
@@ -3746,7 +3748,7 @@ fn compute_gantt_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) -> 
     }
 
     let palette = gantt_palette(theme);
-    let section_palette = gantt_section_palette(theme, &graph.gantt_sections);
+    let section_palette = gantt_section_palette(theme, &graph.gantt.sections);
     let mut current_section: Option<String> = None;
     let mut current_section_idx: Option<usize> = None;
     let mut sections: Vec<GanttSectionLayout> = Vec::new();
@@ -4263,8 +4265,10 @@ fn compute_sankey_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) ->
             .unwrap_or_else(|| id.clone());
         let (color, style) = &node_colors[idx];
         let label_block = measure_label(&label, theme, config);
+        let link = graph.node_links.get(&id).cloned();
+        let id_for_map = id.clone();
         nodes.insert(
-            id.clone(),
+            id_for_map,
             NodeLayout {
                 id: id.clone(),
                 x: node_x[idx],
@@ -4274,7 +4278,7 @@ fn compute_sankey_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) ->
                 label: label_block,
                 shape: crate::ir::NodeShape::Rectangle,
                 style: style.clone(),
-                link: graph.node_links.get(&id).cloned(),
+                link,
                 anchor_subgraph: None,
                 hidden: false,
             },
@@ -5504,7 +5508,7 @@ fn compute_journey_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) -
             let color = theme.git_colors[idx % theme.git_colors.len()].clone();
             actors.push(JourneyActorLayout {
                 name: actor.clone(),
-                color: color.clone(),
+                color,
                 x: x + actor_radius,
                 y: legend_y,
                 radius: actor_radius,
@@ -6803,7 +6807,7 @@ fn compute_sequence_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) 
     let mut edges = Vec::new();
     let subgraphs = Vec::new();
 
-    let mut participants = graph.sequence_participants.clone();
+    let mut participants = graph.sequence.participants.clone();
     for id in graph.nodes.keys() {
         if !participants.contains(id) {
             participants.push(id.clone());
@@ -6865,7 +6869,7 @@ fn compute_sequence_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) 
     let note_padding_y = (theme.font_size * 0.45).max(4.0);
     let mut extra_before = vec![0.0; graph.edges.len()];
     let frame_end_pad = base_spacing * 0.25;
-    for frame in &graph.sequence_frames {
+    for frame in &graph.sequence.frames {
         if frame.start_idx < extra_before.len() {
             extra_before[frame.start_idx] += base_spacing;
         }
@@ -6880,7 +6884,7 @@ fn compute_sequence_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) 
     }
 
     let mut notes_by_index = vec![Vec::new(); graph.edges.len().saturating_add(1)];
-    for note in &graph.sequence_notes {
+    for note in &graph.sequence.notes {
         let idx = note.index.min(graph.edges.len());
         notes_by_index[idx].push(note);
     }
@@ -6991,8 +6995,8 @@ fn compute_sequence_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) 
     }
 
     let mut sequence_frames = Vec::new();
-    if !graph.sequence_frames.is_empty() && !message_ys.is_empty() {
-        let mut frames = graph.sequence_frames.clone();
+    if !graph.sequence.frames.is_empty() && !message_ys.is_empty() {
+        let mut frames = graph.sequence.frames.clone();
         frames.sort_by(|a, b| {
             a.start_idx
                 .cmp(&b.start_idx)
@@ -7156,14 +7160,14 @@ fn compute_sequence_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) 
         .collect::<Vec<_>>();
 
     let mut sequence_boxes = Vec::new();
-    if !graph.sequence_boxes.is_empty() {
+    if !graph.sequence.boxes.is_empty() {
         let pad_x = theme.font_size * 0.8;
         let pad_y = theme.font_size * 0.6;
         let bottom = sequence_footboxes
             .iter()
             .map(|foot| foot.y + foot.height)
             .fold(lifeline_end, f32::max);
-        for seq_box in &graph.sequence_boxes {
+        for seq_box in &graph.sequence.boxes {
             let mut min_x = f32::INFINITY;
             let mut max_x = f32::NEG_INFINITY;
             for participant in &seq_box.participants {
@@ -7203,7 +7207,8 @@ fn compute_sequence_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) 
     let mut sequence_activations = Vec::new();
     let mut activation_stacks: HashMap<String, Vec<(f32, usize)>> = HashMap::new();
     let mut events = graph
-        .sequence_activations
+        .sequence
+        .activations
         .iter()
         .cloned()
         .enumerate()
@@ -7279,7 +7284,7 @@ fn compute_sequence_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) 
     }
 
     let mut sequence_numbers = Vec::new();
-    if let Some(start) = graph.sequence_autonumber {
+    if let Some(start) = graph.sequence.autonumber {
         let mut value = start;
         for (idx, edge) in graph.edges.iter().enumerate() {
             if let (Some(from), Some(y)) = (nodes.get(&edge.from), message_ys.get(idx).copied()) {
