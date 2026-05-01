@@ -890,6 +890,14 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
         graph.kind,
     );
     if graph.kind == DiagramKind::Flowchart {
+        path_cleanup::detour_flowchart_paths_around_non_endpoint_nodes(
+            graph,
+            nodes,
+            &mut routed_points,
+            config,
+        );
+    }
+    if graph.kind == DiagramKind::Flowchart {
         let route_label_centers = route_labels::route_label_centers(&route_label_plans);
         let plan_snapshot = plan::FlowchartLayoutPlan::from_current_pipeline(
             graph,

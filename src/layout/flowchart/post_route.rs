@@ -66,6 +66,11 @@ pub(in crate::layout) fn build_edge_layouts(
                 override_style.label_color = Some(config.requirement.edge_label_color.clone());
             }
         }
+        let label_anchor = if graph.kind == DiagramKind::Flowchart {
+            adjusted_flowchart_label_anchor(label_anchors[idx], label.as_ref(), &routed_points[idx])
+        } else {
+            label_anchors[idx]
+        };
         edges.push(EdgeLayout {
             from: edge.from.clone(),
             to: edge.to.clone(),
@@ -82,12 +87,86 @@ pub(in crate::layout) fn build_edge_layouts(
             end_decoration: edge.end_decoration,
             style: edge.style,
             override_style,
-            label_anchor: label_anchors[idx],
+            label_anchor,
             start_label_anchor: None,
             end_label_anchor: None,
         });
     }
     edges
+}
+
+fn adjusted_flowchart_label_anchor(
+    anchor: Option<(f32, f32)>,
+    label: Option<&TextBlock>,
+    points: &[(f32, f32)],
+) -> Option<(f32, f32)> {
+    let (Some(anchor), Some(label)) = (anchor, label) else {
+        return anchor;
+    };
+    let clearance = 8.0;
+    let overlaps = |candidate: (f32, f32)| {
+        let rect = (
+            candidate.0 - label.width / 2.0 - clearance,
+            candidate.1 - label.height / 2.0 - clearance,
+            label.width + clearance * 2.0,
+            label.height + clearance * 2.0,
+        );
+        points
+            .windows(2)
+            .any(|segment| segment_intersects_rect(segment[0], segment[1], rect))
+    };
+    if !overlaps(anchor) && label.height < 80.0 {
+        return Some(anchor);
+    }
+    if label.height >= 80.0 {
+        return Some((anchor.0, anchor.1 - label.height - clearance * 3.0));
+    }
+    let offset_y = label.height + clearance * 3.0;
+    let offset_x = label.width * 0.5 + clearance * 3.0;
+    [
+        (anchor.0, anchor.1 - offset_y),
+        (anchor.0, anchor.1 + offset_y),
+        (anchor.0 - offset_x, anchor.1),
+        (anchor.0 + offset_x, anchor.1),
+        (anchor.0 - offset_x, anchor.1 - offset_y),
+        (anchor.0 + offset_x, anchor.1 - offset_y),
+        (anchor.0 - offset_x, anchor.1 + offset_y),
+        (anchor.0 + offset_x, anchor.1 + offset_y),
+    ]
+    .into_iter()
+    .find(|candidate| !overlaps(*candidate))
+    .or(Some(anchor))
+}
+
+fn segment_intersects_rect(a: (f32, f32), b: (f32, f32), rect: (f32, f32, f32, f32)) -> bool {
+    let (rx, ry, rw, rh) = rect;
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let p = [-dx, dx, -dy, dy];
+    let q = [a.0 - rx, rx + rw - a.0, a.1 - ry, ry + rh - a.1];
+    let mut u1 = 0.0f32;
+    let mut u2 = 1.0f32;
+    for (pi, qi) in p.into_iter().zip(q) {
+        if pi.abs() <= f32::EPSILON {
+            if qi < 0.0 {
+                return false;
+            }
+            continue;
+        }
+        let t = qi / pi;
+        if pi < 0.0 {
+            if t > u2 {
+                return false;
+            }
+            u1 = u1.max(t);
+        } else {
+            if t < u1 {
+                return false;
+            }
+            u2 = u2.min(t);
+        }
+    }
+    true
 }
 
 #[cfg(test)]

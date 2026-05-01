@@ -795,7 +795,11 @@ pub fn render_svg_with_dimensions(
                     let end = edge.points.last().copied().unwrap_or(start);
                     let mid_x = (start.0 + end.0) / 2.0;
                     let line_y = start.1;
-                    let gap = (theme.font_size * 0.6).max(8.0);
+                    let gap = if layout.kind == crate::ir::DiagramKind::Sequence {
+                        (theme.font_size * 0.25).clamp(3.0, 5.0)
+                    } else {
+                        (theme.font_size * 0.6).max(8.0)
+                    };
                     (mid_x, line_y - gap - label.height / 2.0)
                 });
                 let label_color = edge

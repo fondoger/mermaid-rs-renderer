@@ -214,7 +214,12 @@ fn provisional_route_label_center(
         };
         let needs_cross_axis_lift = label_main + margin * 2.0 >= main_span.max(1.0);
         if needs_cross_axis_lift {
-            let clearance = label_cross * 0.5 + margin;
+            let multiline_lift = if label.lines.len() > 1 {
+                label_cross * 0.75
+            } else {
+                0.0
+            };
+            let clearance = label_cross * 0.5 + margin + multiline_lift;
             for sign in [preferred_sign, -preferred_sign] {
                 let mut candidate = center;
                 if is_horizontal(graph.direction) {
@@ -292,7 +297,8 @@ pub(super) fn sync_route_label_plan_with_points(
         }
     }
 
-    if !preserve_reserved_center && ctx.kind != DiagramKind::State {
+    if !preserve_reserved_center && !matches!(ctx.kind, DiagramKind::Flowchart | DiagramKind::State)
+    {
         insert_label_via_point(points, label_center, ctx.direction);
     }
 
@@ -408,7 +414,7 @@ pub(super) fn apply_label_dummy_anchors(
         label_anchors[idx] = Some(center);
 
         let points = &mut routed_points[idx];
-        if kind != DiagramKind::State && points.len() >= 2 {
+        if !matches!(kind, DiagramKind::Flowchart | DiagramKind::State) && points.len() >= 2 {
             insert_label_via_point(points, center, direction);
         }
     }

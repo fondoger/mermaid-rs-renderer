@@ -335,6 +335,40 @@ pub(in crate::layout) fn flowchart_path_hits_non_endpoint_nodes(
     false
 }
 
+fn flowchart_path_non_endpoint_hit_count(
+    path: &[(f32, f32)],
+    from_id: &str,
+    to_id: &str,
+    nodes: &BTreeMap<String, NodeLayout>,
+) -> usize {
+    let mut hit_ids = std::collections::BTreeSet::new();
+    for segment in path.windows(2) {
+        let a = segment[0];
+        let b = segment[1];
+        for node in nodes.values() {
+            if node.id == from_id
+                || node.id == to_id
+                || node.hidden
+                || node.anchor_subgraph.is_some()
+            {
+                continue;
+            }
+            let obstacle = Obstacle {
+                id: node.id.clone(),
+                x: node.x,
+                y: node.y,
+                width: node.width,
+                height: node.height,
+                members: None,
+            };
+            if segment_intersects_rect(a, b, &obstacle) {
+                hit_ids.insert(node.id.clone());
+            }
+        }
+    }
+    hit_ids.len()
+}
+
 fn first_non_endpoint_node_hit(
     path: &[(f32, f32)],
     from_id: &str,
@@ -439,6 +473,102 @@ fn node_detour_candidates(
         .collect()
 }
 
+fn graph_detour_candidates(
+    path: &[(f32, f32)],
+    first_seg_idx: usize,
+    last_seg_idx: usize,
+    nodes: &BTreeMap<String, NodeLayout>,
+    from_id: &str,
+    to_id: &str,
+    clearance: f32,
+) -> Vec<Vec<(f32, f32)>> {
+    if first_seg_idx + 1 >= path.len() || last_seg_idx + 1 >= path.len() {
+        return Vec::new();
+    }
+
+    let mut left = f32::INFINITY;
+    let mut right = f32::NEG_INFINITY;
+    let mut top = f32::INFINITY;
+    let mut bottom = f32::NEG_INFINITY;
+    for node in nodes.values() {
+        if node.id == from_id || node.id == to_id || node.hidden || node.anchor_subgraph.is_some() {
+            continue;
+        }
+        left = left.min(node.x);
+        right = right.max(node.x + node.width);
+        top = top.min(node.y);
+        bottom = bottom.max(node.y + node.height);
+    }
+    if !left.is_finite() || !right.is_finite() || !top.is_finite() || !bottom.is_finite() {
+        return Vec::new();
+    }
+
+    let entry = path[first_seg_idx];
+    let exit = path[last_seg_idx + 1];
+    perimeter_route_candidates(
+        entry,
+        exit,
+        left - clearance,
+        right + clearance,
+        top - clearance,
+        bottom + clearance,
+    )
+    .into_iter()
+    .map(|route| {
+        let mut candidate = Vec::with_capacity(path.len() + route.len());
+        candidate.extend_from_slice(&path[..=first_seg_idx]);
+        if route.len() > 2 {
+            candidate.extend_from_slice(&route[1..route.len() - 1]);
+        }
+        candidate.extend_from_slice(&path[last_seg_idx + 1..]);
+        compress_path(&candidate)
+    })
+    .collect()
+}
+
+fn graph_perimeter_detour_candidates(
+    path: &[(f32, f32)],
+    nodes: &BTreeMap<String, NodeLayout>,
+    from_id: &str,
+    to_id: &str,
+    clearance: f32,
+) -> Vec<Vec<(f32, f32)>> {
+    if path.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut left = f32::INFINITY;
+    let mut right = f32::NEG_INFINITY;
+    let mut top = f32::INFINITY;
+    let mut bottom = f32::NEG_INFINITY;
+    for node in nodes.values() {
+        if node.id == from_id || node.id == to_id || node.hidden || node.anchor_subgraph.is_some() {
+            continue;
+        }
+        left = left.min(node.x);
+        right = right.max(node.x + node.width);
+        top = top.min(node.y);
+        bottom = bottom.max(node.y + node.height);
+    }
+    if !left.is_finite() || !right.is_finite() || !top.is_finite() || !bottom.is_finite() {
+        return Vec::new();
+    }
+
+    let start = path[0];
+    let end = *path.last().unwrap_or(&start);
+    perimeter_route_candidates(
+        start,
+        end,
+        left - clearance,
+        right + clearance,
+        top - clearance,
+        bottom + clearance,
+    )
+    .into_iter()
+    .map(|candidate| compress_path(&candidate))
+    .collect()
+}
+
 pub(in crate::layout) fn detour_flowchart_paths_around_non_endpoint_nodes(
     graph: &Graph,
     nodes: &BTreeMap<String, NodeLayout>,
@@ -450,7 +580,7 @@ pub(in crate::layout) fn detour_flowchart_paths_around_non_endpoint_nodes(
         let Some(edge) = graph.edges.get(idx) else {
             continue;
         };
-        for _ in 0..4 {
+        for _ in 0..8 {
             let Some((first_seg_idx, last_seg_idx, obstacle)) =
                 first_non_endpoint_node_hit(points, &edge.from, &edge.to, nodes)
             else {
@@ -458,16 +588,58 @@ pub(in crate::layout) fn detour_flowchart_paths_around_non_endpoint_nodes(
             };
             let mut best: Option<Vec<(f32, f32)>> = None;
             let mut best_cost = f32::INFINITY;
-            for candidate in
-                node_detour_candidates(points, first_seg_idx, last_seg_idx, &obstacle, clearance)
-            {
-                if flowchart_path_hits_non_endpoint_nodes(&candidate, &edge.from, &edge.to, nodes) {
-                    continue;
+            let mut best_hits = usize::MAX;
+            for clearance_scale in [1.0, 1.5, 2.0, 3.0, 4.0] {
+                let candidate_clearance = clearance * clearance_scale;
+                let candidates = node_detour_candidates(
+                    points,
+                    first_seg_idx,
+                    last_seg_idx,
+                    &obstacle,
+                    candidate_clearance,
+                )
+                .into_iter()
+                .chain(graph_detour_candidates(
+                    points,
+                    first_seg_idx,
+                    last_seg_idx,
+                    nodes,
+                    &edge.from,
+                    &edge.to,
+                    candidate_clearance,
+                ));
+                for candidate in candidates {
+                    let hits = flowchart_path_non_endpoint_hit_count(
+                        &candidate, &edge.from, &edge.to, nodes,
+                    );
+                    let cost = path_length(&candidate)
+                        + path_bend_count(&candidate) as f32 * candidate_clearance;
+                    if hits < best_hits || (hits == best_hits && cost < best_cost) {
+                        best_hits = hits;
+                        best_cost = cost;
+                        best = Some(candidate);
+                    }
                 }
-                let cost = path_length(&candidate) + path_bend_count(&candidate) as f32 * clearance;
-                if cost < best_cost {
-                    best_cost = cost;
-                    best = Some(candidate);
+            }
+            if best.is_none() {
+                for candidate in graph_perimeter_detour_candidates(
+                    points,
+                    nodes,
+                    &edge.from,
+                    &edge.to,
+                    clearance * 2.0,
+                ) {
+                    if flowchart_path_hits_non_endpoint_nodes(
+                        &candidate, &edge.from, &edge.to, nodes,
+                    ) {
+                        continue;
+                    }
+                    let cost =
+                        path_length(&candidate) + path_bend_count(&candidate) as f32 * clearance;
+                    if cost < best_cost {
+                        best_cost = cost;
+                        best = Some(candidate);
+                    }
                 }
             }
             let Some(candidate) = best else {

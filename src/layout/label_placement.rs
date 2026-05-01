@@ -196,6 +196,9 @@ pub fn resolve_all_label_positions(
         theme,
         config,
     );
+    if layout.kind == DiagramKind::Flowchart {
+        move_flowchart_labels_off_own_edges(&mut layout.edges);
+    }
 
     // Step 2: Resolve endpoint labels (start_label_anchor, end_label_anchor).
     resolve_endpoint_labels(
@@ -207,6 +210,46 @@ pub fn resolve_all_label_positions(
         theme,
         config,
     );
+}
+
+fn move_flowchart_labels_off_own_edges(edges: &mut [EdgeLayout]) {
+    for edge in edges {
+        let (Some(label), Some(anchor)) = (&edge.label, edge.label_anchor) else {
+            continue;
+        };
+        let rect = (
+            anchor.0 - label.width / 2.0,
+            anchor.1 - label.height / 2.0,
+            label.width,
+            label.height,
+        );
+        if polyline_rect_distance(&edge.points, &rect) > 0.0 {
+            continue;
+        }
+        let dy = label.height + 24.0;
+        let dx = label.width * 0.5 + 24.0;
+        for candidate in [
+            (anchor.0, anchor.1 - dy),
+            (anchor.0, anchor.1 + dy),
+            (anchor.0 - dx, anchor.1),
+            (anchor.0 + dx, anchor.1),
+            (anchor.0 - dx, anchor.1 - dy),
+            (anchor.0 + dx, anchor.1 - dy),
+            (anchor.0 - dx, anchor.1 + dy),
+            (anchor.0 + dx, anchor.1 + dy),
+        ] {
+            let candidate_rect = (
+                candidate.0 - label.width / 2.0,
+                candidate.1 - label.height / 2.0,
+                label.width,
+                label.height,
+            );
+            if polyline_rect_distance(&edge.points, &candidate_rect) > 0.0 {
+                edge.label_anchor = Some(candidate);
+                break;
+            }
+        }
+    }
 }
 
 /// Resolve center label positions for all edges, writing into `edge.label_anchor`.
