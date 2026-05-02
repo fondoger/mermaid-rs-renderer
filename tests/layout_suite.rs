@@ -379,6 +379,7 @@ fn render_all_fixtures() {
         "state/note.mmd",
         "timeline/basic.mmd",
         "treemap/basic.mmd",
+        "xmind/basic.mmd",
         "xychart/basic.mmd",
         "zenuml/basic.mmd",
     ];

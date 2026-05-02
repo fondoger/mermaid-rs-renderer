@@ -394,6 +394,12 @@ pub fn render_svg(layout: &Layout, theme: &Theme, config: &LayoutConfig) -> Stri
         return svg;
     }
 
+    if layout.kind == crate::ir::DiagramKind::Xmind {
+        svg.push_str(&render_xmind(layout, theme));
+        svg.push_str("</svg>");
+        return svg;
+    }
+
     for subgraph in &layout.subgraphs {
         let label_empty = subgraph.label.trim().is_empty();
         if is_state {
@@ -1554,6 +1560,206 @@ pub fn render_svg(layout: &Layout, theme: &Theme, config: &LayoutConfig) -> Stri
     }
 
     svg.push_str("</svg>");
+    svg
+}
+
+fn render_xmind(layout: &Layout, theme: &Theme) -> String {
+    let mut svg = String::new();
+    svg.push_str("<g class=\"xmind\">");
+    svg.push_str("<g class=\"xmind-lines\">");
+    for edge in &layout.edges {
+        let stroke = edge
+            .override_style
+            .stroke
+            .as_deref()
+            .unwrap_or(theme.line_color.as_str());
+        let stroke_width = edge.override_style.stroke_width.unwrap_or(2.0);
+        let d = xmind_edge_path(edge);
+        svg.push_str(&format!(
+            "<path d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+            d,
+            escape_xml(stroke),
+            stroke_width
+        ));
+    }
+    svg.push_str("</g><g class=\"xmind-nodes\">");
+
+    let mut nodes: Vec<&crate::layout::NodeLayout> = layout.nodes.values().collect();
+    nodes.sort_by_key(|node| match node.shape {
+        crate::ir::NodeShape::RoundRect => 0,
+        crate::ir::NodeShape::Stadium => 1,
+        crate::ir::NodeShape::Text => 2,
+        _ => 3,
+    });
+    for node in nodes {
+        match node.shape {
+            crate::ir::NodeShape::RoundRect => svg.push_str(&render_xmind_root(node, theme)),
+            crate::ir::NodeShape::Stadium => svg.push_str(&render_xmind_branch(node, theme)),
+            crate::ir::NodeShape::Text => svg.push_str(&render_xmind_topic(node, theme)),
+            _ => {}
+        }
+    }
+    svg.push_str("</g></g>");
+    svg
+}
+
+fn xmind_edge_path(edge: &crate::layout::EdgeLayout) -> String {
+    match edge.points.as_slice() {
+        [start, ctrl, end] => format!(
+            "M {:.3},{:.3} C {:.3},{:.3} {:.3},{:.3} {:.3},{:.3}",
+            start.0, start.1, start.0, start.1, ctrl.0, ctrl.1, end.0, end.1
+        ),
+        [start, stub, bend, end, ..] => {
+            let radius = 6.0_f32;
+            let dy = bend.1 - start.1;
+            let vertical_end_y = if dy > radius {
+                bend.1 - radius
+            } else if dy < -radius {
+                bend.1 + radius
+            } else {
+                bend.1
+            };
+            let corner_x = (stub.0 + radius).min(end.0);
+            format!(
+                "M {:.3},{:.3} L {:.3},{:.3} L {:.3},{:.3} C {:.3},{:.3} {:.3},{:.3} {:.3},{:.3} L {:.3},{:.3}",
+                start.0,
+                start.1,
+                stub.0,
+                stub.1,
+                stub.0,
+                vertical_end_y,
+                stub.0,
+                vertical_end_y,
+                stub.0,
+                bend.1,
+                corner_x,
+                bend.1,
+                end.0,
+                end.1
+            )
+        }
+        points => points_to_path(points),
+    }
+}
+
+fn render_xmind_root(node: &crate::layout::NodeLayout, theme: &Theme) -> String {
+    let fill = node.style.fill.as_deref().unwrap_or("#28292d");
+    let text = node.style.text_color.as_deref().unwrap_or("#fdfcfd");
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        "<rect x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" rx=\"10\" ry=\"10\" fill=\"{}\" stroke=\"none\"/>",
+        node.x,
+        node.y,
+        node.width,
+        node.height,
+        escape_xml(fill)
+    ));
+    svg.push_str(&xmind_text_svg(
+        node.x + node.width / 2.0,
+        node.y + 14.0 + 30.0,
+        &node.label.lines,
+        30.0,
+        text,
+        "middle",
+        Some("bold"),
+        theme,
+    ));
+    svg
+}
+
+fn render_xmind_branch(node: &crate::layout::NodeLayout, theme: &Theme) -> String {
+    let fill = node.style.fill.as_deref().unwrap_or("#ec662d");
+    let text = node.style.text_color.as_deref().unwrap_or("#fafcfa");
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        "<rect x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" rx=\"8\" ry=\"8\" fill=\"{}\" stroke=\"none\"/>",
+        node.x,
+        node.y,
+        node.width,
+        node.height,
+        escape_xml(fill)
+    ));
+    svg.push_str(&xmind_text_svg(
+        node.x + 16.0,
+        node.y + 8.0 + 18.0,
+        &node.label.lines,
+        18.0,
+        text,
+        "start",
+        None,
+        theme,
+    ));
+    svg
+}
+
+fn render_xmind_topic(node: &crate::layout::NodeLayout, theme: &Theme) -> String {
+    let line = node
+        .style
+        .line_color
+        .as_deref()
+        .or(node.style.stroke.as_deref())
+        .unwrap_or("#ec662d");
+    let text = node.style.text_color.as_deref().unwrap_or("#0d0d0d");
+    let y = node.y + node.height;
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        "<line x1=\"{:.2}\" y1=\"{:.2}\" x2=\"{:.2}\" y2=\"{:.2}\" stroke=\"{}\" stroke-width=\"2\" stroke-linecap=\"round\"/>",
+        node.x,
+        y,
+        node.x + node.width,
+        y,
+        escape_xml(line)
+    ));
+    svg.push_str(&xmind_text_svg(
+        node.x + 6.0,
+        node.y + 7.0 + 14.0,
+        &node.label.lines,
+        14.0,
+        text,
+        "start",
+        None,
+        theme,
+    ));
+    svg
+}
+
+fn xmind_text_svg(
+    x: f32,
+    y: f32,
+    lines: &[String],
+    font_size: f32,
+    fill: &str,
+    anchor: &str,
+    weight: Option<&str>,
+    theme: &Theme,
+) -> String {
+    let family = normalize_font_family(&theme.font_family);
+    let fill = escape_xml(fill);
+    let weight_attr = weight
+        .map(|value| format!(" font-weight=\"{}\"", value))
+        .unwrap_or_default();
+    if lines.len() <= 1 {
+        let text = lines.first().map(|line| line.as_str()).unwrap_or("");
+        return format!(
+            "<text x=\"{x:.2}\" y=\"{y:.2}\" text-anchor=\"{anchor}\" font-family=\"{}\" font-size=\"{font_size}\" fill=\"{fill}\"{weight_attr}>{}</text>",
+            family,
+            escape_xml(text)
+        );
+    }
+
+    let line_height = font_size * 1.35;
+    let mut svg = format!(
+        "<text x=\"{x:.2}\" y=\"{y:.2}\" text-anchor=\"{anchor}\" font-family=\"{}\" font-size=\"{font_size}\" fill=\"{fill}\"{weight_attr}>",
+        family
+    );
+    for (idx, line) in lines.iter().enumerate() {
+        let dy = if idx == 0 { 0.0 } else { line_height };
+        svg.push_str(&format!(
+            "<tspan x=\"{x:.2}\" dy=\"{dy:.2}\">{}</tspan>",
+            escape_xml(line)
+        ));
+    }
+    svg.push_str("</text>");
     svg
 }
 

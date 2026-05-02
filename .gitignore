@@ -12,3 +12,5 @@ benchmark_table*.png
 /comparison/
 node_modules/
 tmp/
+
+.claude

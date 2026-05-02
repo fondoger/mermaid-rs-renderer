@@ -63,6 +63,7 @@ pub fn parse_mermaid(input: &str) -> Result<ParseOutput> {
         DiagramKind::Er => parse_er_diagram(input),
         DiagramKind::Pie => parse_pie_diagram(input),
         DiagramKind::Mindmap => parse_mindmap_diagram(input),
+        DiagramKind::Xmind => parse_xmind_diagram(input),
         DiagramKind::Journey => parse_journey_diagram(input),
         DiagramKind::Timeline => parse_timeline_diagram(input),
         DiagramKind::Gantt => parse_gantt_diagram(input),
@@ -125,6 +126,9 @@ fn detect_diagram_kind(input: &str) -> DiagramKind {
         }
         if lower.starts_with("mindmap") {
             return DiagramKind::Mindmap;
+        }
+        if lower.starts_with("xmind") || without_comment.starts_with('#') {
+            return DiagramKind::Xmind;
         }
         if lower.starts_with("journey") {
             return DiagramKind::Journey;
@@ -1680,8 +1684,16 @@ fn parse_pie_slice_line(line: &str) -> Option<(String, f32)> {
 }
 
 fn parse_mindmap_diagram(input: &str) -> Result<ParseOutput> {
+    parse_mindmap_like_diagram(input, DiagramKind::Mindmap)
+}
+
+fn parse_xmind_diagram(input: &str) -> Result<ParseOutput> {
+    parse_mindmap_like_diagram(input, DiagramKind::Xmind)
+}
+
+fn parse_mindmap_like_diagram(input: &str, kind: DiagramKind) -> Result<ParseOutput> {
     let mut graph = Graph::new();
-    graph.kind = DiagramKind::Mindmap;
+    graph.kind = kind;
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input_keep_indent(input)?;
     let mut stack: Vec<String> = Vec::new();
@@ -1694,19 +1706,30 @@ fn parse_mindmap_diagram(input: &str) -> Result<ParseOutput> {
             continue;
         }
         let lower = trimmed.to_ascii_lowercase();
-        if lower.starts_with("mindmap") {
+        if lower.starts_with("mindmap") || lower.starts_with("xmind") {
             continue;
         }
 
-        let indent = count_indent(&raw_line);
-        let base = *base_indent.get_or_insert(indent);
-        let rel_indent = indent.saturating_sub(base);
-        let mut level = rel_indent / 2;
+        let (mut level, node_text) = if kind == DiagramKind::Xmind {
+            if let Some((heading_level, heading_text)) = parse_markdown_heading(trimmed) {
+                (heading_level, heading_text)
+            } else {
+                let indent = count_indent(&raw_line);
+                let base = *base_indent.get_or_insert(indent);
+                let rel_indent = indent.saturating_sub(base);
+                (rel_indent / 2, trimmed.to_string())
+            }
+        } else {
+            let indent = count_indent(&raw_line);
+            let base = *base_indent.get_or_insert(indent);
+            let rel_indent = indent.saturating_sub(base);
+            (rel_indent / 2, trimmed.to_string())
+        };
         if level > stack.len() {
             level = stack.len();
         }
 
-        let (raw_id, label, node_type, classes) = parse_mindmap_node_token(trimmed);
+        let (raw_id, label, node_type, classes) = parse_mindmap_node_token(&node_text);
         let mut id = raw_id;
         if id.is_empty() {
             id = sanitize_id(&label);
@@ -1808,6 +1831,19 @@ fn parse_mindmap_diagram(input: &str) -> Result<ParseOutput> {
     }
 
     Ok(ParseOutput { graph, init_config })
+}
+
+fn parse_markdown_heading(line: &str) -> Option<(usize, String)> {
+    let trimmed = line.trim_start();
+    let hashes = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if hashes == 0 || hashes > 6 {
+        return None;
+    }
+    let label = trimmed[hashes..].trim();
+    if label.is_empty() {
+        return None;
+    }
+    Some((hashes - 1, label.to_string()))
 }
 
 fn parse_mindmap_node_token(
@@ -6400,6 +6436,15 @@ A["foo & bar"] & B --> C"#;
         assert_eq!(parsed.graph.kind, DiagramKind::Mindmap);
         assert!(parsed.graph.nodes.len() >= 4);
         assert_eq!(parsed.graph.edges.len(), 3);
+    }
+
+    #[test]
+    fn parse_xmind_markdown_outline() {
+        let input = "# Root\n## Child A\n## Child B\n### Grandchild";
+        let parsed = parse_mermaid(input).unwrap();
+        assert_eq!(parsed.graph.kind, DiagramKind::Xmind);
+        assert_eq!(parsed.graph.edges.len(), 3);
+        assert_eq!(parsed.graph.mindmap.root_id.as_deref(), Some("Root"));
     }
 
     #[test]

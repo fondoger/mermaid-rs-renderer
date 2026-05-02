@@ -21,6 +21,7 @@ mod text;
 mod timeline;
 mod treemap;
 pub(crate) mod types;
+mod xmind;
 mod xychart;
 use architecture::*;
 use block::*;
@@ -42,6 +43,7 @@ use text::*;
 use timeline::*;
 use treemap::*;
 pub use types::*;
+use xmind::*;
 use xychart::*;
 
 use crate::config::{LayoutConfig, PieRenderMode, TreemapRenderMode};
@@ -187,6 +189,7 @@ pub fn compute_layout_with_metrics(
         crate::ir::DiagramKind::GitGraph => compute_gitgraph_layout(graph, theme, config),
         crate::ir::DiagramKind::C4 => compute_c4_layout(graph, config),
         crate::ir::DiagramKind::Mindmap => compute_mindmap_layout(graph, theme, config),
+        crate::ir::DiagramKind::Xmind => compute_xmind_layout(graph, theme, config),
         crate::ir::DiagramKind::XYChart => compute_xychart_layout(graph, theme, config),
         crate::ir::DiagramKind::Timeline => compute_timeline_layout(graph, theme, config),
         crate::ir::DiagramKind::Journey => compute_journey_layout(graph, theme, config),

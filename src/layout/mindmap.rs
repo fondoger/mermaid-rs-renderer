@@ -145,9 +145,8 @@ mod tidy_tree {
             if bottom(arena, srv) > ih_stack.last().unwrap().0 {
                 ih_stack.pop();
             }
-            let distance =
-                mssr + arena.nodes[srv].prelim + arena.nodes[srv].w
-                    - (mscl + arena.nodes[clv].prelim);
+            let distance = mssr + arena.nodes[srv].prelim + arena.nodes[srv].w
+                - (mscl + arena.nodes[clv].prelim);
             if distance > 0.0 {
                 mscl += distance;
                 let ih_index = ih_stack.last().unwrap().1;
@@ -370,13 +369,7 @@ fn place_tidy_tree(
     let root_extra_pad = 30.0_f32;
 
     if !right_children.is_empty() {
-        let positions = layout_horizontal_subtrees(
-            &right_children,
-            info_map,
-            nodes,
-            h_gap,
-            v_gap,
-        );
+        let positions = layout_horizontal_subtrees(&right_children, info_map, nodes, h_gap, v_gap);
         let edge_x = root_center.0 + root_width / 2.0 + h_gap + root_extra_pad;
         for (id, dx, cy) in positions {
             if let Some(node) = nodes.get_mut(&id) {
@@ -388,13 +381,7 @@ fn place_tidy_tree(
     }
 
     if !left_children.is_empty() {
-        let positions = layout_horizontal_subtrees(
-            &left_children,
-            info_map,
-            nodes,
-            h_gap,
-            v_gap,
-        );
+        let positions = layout_horizontal_subtrees(&left_children, info_map, nodes, h_gap, v_gap);
         let edge_x = root_center.0 - root_width / 2.0 - h_gap - root_extra_pad;
         for (id, dx, cy) in positions {
             if let Some(node) = nodes.get_mut(&id) {
@@ -494,11 +481,7 @@ fn tidy_tree_edge_points(
 /// where the top/bottom branch returns a point that does *not* lie on the
 /// straight inside→outside line. Reproducing that quirk is necessary for
 /// the per-node rectangle anchors to line up with what Mermaid JS renders.
-fn clip_to_rect(
-    node: &NodeLayout,
-    center: (f32, f32),
-    outside: (f32, f32),
-) -> (f32, f32) {
+fn clip_to_rect(node: &NodeLayout, center: (f32, f32), outside: (f32, f32)) -> (f32, f32) {
     if node.width == 0.0 || node.height == 0.0 {
         return outside;
     }
@@ -535,7 +518,11 @@ fn clip_to_rect(
         } else {
             y - h - outside.1
         };
-        let r = if big_q == 0.0 { 0.0 } else { (big_r * q) / big_q };
+        let r = if big_q == 0.0 {
+            0.0
+        } else {
+            (big_r * q) / big_q
+        };
         let mut res_x = if inside.0 < outside.0 {
             inside.0 + r
         } else {
@@ -564,7 +551,11 @@ fn clip_to_rect(
         } else {
             x - w - outside.0
         };
-        let q = if big_r == 0.0 { 0.0 } else { (big_q * r) / big_r };
+        let q = if big_r == 0.0 {
+            0.0
+        } else {
+            (big_q * r) / big_r
+        };
         let mut res_x = if inside.0 < outside.0 {
             inside.0 + big_r - r
         } else {
@@ -687,7 +678,7 @@ fn layout_horizontal_subtrees(
         }
         let n = &arena.nodes[idx];
         let center_along = n.x + n.w / 2.0; // → vertical center after rotation
-        let depth_offset = n.y;             // → horizontal distance from root edge
+        let depth_offset = n.y; // → horizontal distance from root edge
         let original_height = (n.w - vertical_gap).max(0.0);
         if depth_offset < 1e-3 {
             // First-level subtree root in the rotated frame.
@@ -1045,32 +1036,14 @@ pub(super) fn compute_mindmap_layout(
             "tidy-tree" | "tidy_tree" | "tidytree" => {
                 curve_edges = true;
                 place_tidy_tree(
-                    root_id,
-                    &info_map,
-                    &mut nodes,
-                    tidy_h_gap,
-                    tidy_v_gap,
-                    false,
+                    root_id, &info_map, &mut nodes, tidy_h_gap, tidy_v_gap, false,
                 )
             }
             "lr-tree" | "lr_tree" | "lrtree" => {
                 curve_edges = true;
-                place_tidy_tree(
-                    root_id,
-                    &info_map,
-                    &mut nodes,
-                    tidy_h_gap,
-                    tidy_v_gap,
-                    true,
-                )
+                place_tidy_tree(root_id, &info_map, &mut nodes, tidy_h_gap, tidy_v_gap, true)
             }
-            _ => place_radial_layout(
-                root_id,
-                &info_map,
-                &mut nodes,
-                horizontal_gap,
-                vertical_gap,
-            ),
+            _ => place_radial_layout(root_id, &info_map, &mut nodes, horizontal_gap, vertical_gap),
         };
     }
 

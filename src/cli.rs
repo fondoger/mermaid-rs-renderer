@@ -150,7 +150,12 @@ pub fn run() -> Result<()> {
 
     let (input, is_markdown) = read_input(args.input.as_deref())?;
     let diagrams = if is_markdown {
-        extract_mermaid_blocks(&input)
+        let blocks = extract_mermaid_blocks(&input);
+        if blocks.is_empty() && markdown_looks_like_xmind_outline(&input) {
+            vec![input]
+        } else {
+            blocks
+        }
     } else {
         vec![input]
     };
@@ -327,6 +332,15 @@ fn extract_mermaid_blocks(input: &str) -> Vec<String> {
     blocks
 }
 
+fn markdown_looks_like_xmind_outline(input: &str) -> bool {
+    input
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.starts_with('#'))
+        .unwrap_or(false)
+}
+
 fn detect_mermaid_fence(line: &str) -> Option<String> {
     if line.starts_with("```") {
         let rest = line.trim_start_matches('`').trim();
@@ -438,6 +452,15 @@ sequenceDiagram
         assert!(blocks[0].contains("flowchart"));
         assert!(blocks[1].contains("flowchart"));
         assert!(blocks[2].contains("sequenceDiagram"));
+    }
+
+    #[test]
+    fn detects_markdown_outline_for_xmind_fallback() {
+        let input = "# Root\n## Branch\n### Topic";
+        assert!(markdown_looks_like_xmind_outline(input));
+        assert!(!markdown_looks_like_xmind_outline(
+            "intro\n```mermaid\nflowchart LR\n```"
+        ));
     }
 
     #[test]
@@ -1506,10 +1529,7 @@ fn merge_init_config(mut config: Config, init: serde_json::Value) -> Config {
         }
     }
     if let Some(mindmap) = init.get("mindmap").and_then(|v| v.as_object()) {
-        if let Some(val) = mindmap
-            .get("layoutAlgorithm")
-            .and_then(|v| v.as_str())
-        {
+        if let Some(val) = mindmap.get("layoutAlgorithm").and_then(|v| v.as_str()) {
             config.layout.mindmap.layout_algorithm = val.to_string();
         }
     }

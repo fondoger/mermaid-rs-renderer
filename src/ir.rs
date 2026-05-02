@@ -17,6 +17,7 @@ pub enum DiagramKind {
     Er,
     Pie,
     Mindmap,
+    Xmind,
     Journey,
     Timeline,
     Gantt,
