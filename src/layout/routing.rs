@@ -413,6 +413,7 @@ pub(super) struct RouteContext<'a> {
     pub(super) preferred_label_clearance: f32,
     pub(super) force_preferred_label_via: bool,
     pub(super) coarse_grid_retry: bool,
+    pub(super) allow_unoffset_route_candidate: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1879,6 +1880,9 @@ pub(super) fn route_edge_with_avoidance(
     // Fall back to orthogonal routing with control points
     let step = ctx.config.node_spacing.max(ORTHO_STEP_MIN_SPACING) * ROUTING_PAD_RATIO;
     let mut offsets = vec![ctx.base_offset];
+    if ctx.base_offset.abs() > 1e-3 && ctx.allow_unoffset_route_candidate {
+        offsets.push(0.0);
+    }
     for i in 1..=6 {
         let delta = step * i as f32;
         offsets.push(ctx.base_offset + delta);

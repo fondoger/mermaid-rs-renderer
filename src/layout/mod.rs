@@ -2318,6 +2318,7 @@ flowchart LR
             preferred_label_clearance: 0.0,
             force_preferred_label_via: true,
             coarse_grid_retry: true,
+            allow_unoffset_route_candidate: false,
         };
         let mut occupancy = EdgeOccupancy::new(
             config.node_spacing.max(MIN_NODE_SPACING_FLOOR) * EDGE_OCCUPANCY_CELL_RATIO,
@@ -2365,6 +2366,7 @@ flowchart LR
             preferred_label_clearance: 0.0,
             force_preferred_label_via: true,
             coarse_grid_retry: true,
+            allow_unoffset_route_candidate: false,
         };
         let points = route_edge_with_avoidance(&ctx, None, None, None);
         assert!(!points.is_empty());
@@ -2412,6 +2414,7 @@ flowchart LR
             preferred_label_clearance: 0.0,
             force_preferred_label_via: true,
             coarse_grid_retry: true,
+            allow_unoffset_route_candidate: false,
         };
         let start = anchor_point_for_node(&from, EdgeSide::Right, 0.0);
         let end = anchor_point_for_node(&to, EdgeSide::Left, 0.0);
@@ -2484,6 +2487,7 @@ flowchart LR
             preferred_label_clearance: 0.0,
             force_preferred_label_via: true,
             coarse_grid_retry: true,
+            allow_unoffset_route_candidate: false,
         };
         let points = route_edge_with_avoidance(&ctx, None, None, None);
         let dist = polyline_point_distance(&points, preferred);
@@ -2533,6 +2537,7 @@ flowchart LR
             preferred_label_clearance: clearance,
             force_preferred_label_via: false,
             coarse_grid_retry: true,
+            allow_unoffset_route_candidate: false,
         };
         let points = route_edge_with_avoidance(&ctx, None, None, None);
         let label_corridor = Obstacle {

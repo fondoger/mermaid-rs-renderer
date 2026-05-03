@@ -646,6 +646,9 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
             label_obstacles,
             config,
         );
+    let has_any_edge_label = edge_route_labels.iter().any(Option::is_some)
+        || edge_start_labels.iter().any(Option::is_some)
+        || edge_end_labels.iter().any(Option::is_some);
     let mut existing_segments: Vec<Segment> = Vec::new();
     let mut label_anchors: Vec<Option<(f32, f32)>> = vec![None; graph.edges.len()];
     for (_, _, _, idx) in &route_order {
@@ -753,6 +756,8 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
             preferred_label_clearance,
             force_preferred_label_via: graph.kind != DiagramKind::Flowchart,
             coarse_grid_retry: graph.kind == DiagramKind::Flowchart,
+            allow_unoffset_route_candidate: graph.kind == DiagramKind::Flowchart
+                && !has_any_edge_label,
         };
         let use_existing_for_edge = !(matches!(graph.kind, DiagramKind::Class | DiagramKind::Er)
             && edge.style == crate::ir::EdgeStyle::Dotted);
@@ -793,6 +798,7 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
                 preferred_label_clearance: route_ctx.preferred_label_clearance,
                 force_preferred_label_via: route_ctx.force_preferred_label_via,
                 coarse_grid_retry: route_ctx.coarse_grid_retry,
+                allow_unoffset_route_candidate: route_ctx.allow_unoffset_route_candidate,
             };
             let fast_points = route_edge_with_avoidance(&fast_ctx, None, None, existing_for_edge);
             let fast_hits = path_obstacle_intersections(
