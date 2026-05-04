@@ -3742,7 +3742,11 @@ fn render_timeline(
     // Main timeline line
     svg.push_str(&format!(
         "<line x1=\"{:.2}\" y1=\"{:.2}\" x2=\"{:.2}\" y2=\"{:.2}\" stroke=\"{}\" stroke-width=\"3\"/>",
-        layout.line_start_x, layout.line_y, layout.line_end_x, layout.line_y, theme.primary_border_color
+        layout.line_start_x,
+        layout.line_start_y,
+        layout.line_end_x,
+        layout.line_end_y,
+        theme.primary_border_color
     ));
 
     // Colors for events
@@ -3753,19 +3757,41 @@ fn render_timeline(
     // Events
     for (i, event) in layout.events.iter().enumerate() {
         let color = colors[i % colors.len()];
+        let vertical = layout.direction == crate::ir::Direction::TopDown;
         let center_x = event.x + event.width / 2.0;
+        let circle_x = if vertical {
+            layout.line_start_x
+        } else {
+            center_x
+        };
+        let text_x = if vertical { event.x + 8.0 } else { center_x };
+        let text_anchor = if vertical { "start" } else { "middle" };
 
         // Circle on timeline
         svg.push_str(&format!(
             "<circle cx=\"{:.2}\" cy=\"{:.2}\" r=\"8\" fill=\"{}\" stroke=\"{}\" stroke-width=\"2\"/>",
-            center_x, event.circle_y, theme.primary_color, theme.primary_border_color
+            circle_x, event.circle_y, theme.primary_color, theme.primary_border_color
         ));
 
-        // Vertical connector line
-        svg.push_str(&format!(
-            "<line x1=\"{:.2}\" y1=\"{:.2}\" x2=\"{:.2}\" y2=\"{:.2}\" stroke=\"{}\" stroke-width=\"2\" stroke-dasharray=\"4,2\"/>",
-            center_x, event.circle_y + 8.0, center_x, event.y, theme.primary_border_color
-        ));
+        if vertical {
+            svg.push_str(&format!(
+                "<line x1=\"{:.2}\" y1=\"{:.2}\" x2=\"{:.2}\" y2=\"{:.2}\" stroke=\"{}\" stroke-width=\"2\" stroke-dasharray=\"4,2\"/>",
+                circle_x + 8.0,
+                event.circle_y,
+                event.x,
+                event.circle_y,
+                theme.primary_border_color
+            ));
+        } else {
+            svg.push_str(&format!(
+                "<line x1=\"{:.2}\" y1=\"{:.2}\" x2=\"{:.2}\" y2=\"{:.2}\" stroke=\"{}\" stroke-width=\"2\" stroke-dasharray=\"4,2\"/>",
+                circle_x,
+                event.circle_y + 8.0,
+                circle_x,
+                event.y,
+                theme.primary_border_color
+            ));
+        }
 
         // Event box
         svg.push_str(&format!(
@@ -3775,13 +3801,13 @@ fn render_timeline(
 
         // Time label (bold, at top of box)
         svg.push_str(&text_block_svg_with_font_size_weight(
-            center_x,
+            text_x,
             event.y + 20.0,
             &event.time,
             theme,
             config,
             theme.font_size,
-            "middle",
+            text_anchor,
             Some(theme.primary_text_color.as_str()),
             Some("bold"),
             true,
@@ -3796,13 +3822,13 @@ fn render_timeline(
         let event_line_height = event_font_size * config.label_line_height;
         for evt in &event.events {
             svg.push_str(&text_block_svg_with_font_size(
-                center_x,
+                text_x,
                 text_y,
                 evt,
                 theme,
                 config,
                 event_font_size,
-                "middle",
+                text_anchor,
                 Some(theme.primary_text_color.as_str()),
                 true,
             ));

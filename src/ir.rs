@@ -320,6 +320,15 @@ impl Direction {
             _ => None,
         }
     }
+
+    pub fn from_timeline_token(token: &str) -> Option<Self> {
+        let upper = token.to_ascii_uppercase();
+        match upper.as_str() {
+            "TD" => Some(Self::TopDown),
+            "LR" => Some(Self::LeftRight),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -517,6 +526,7 @@ pub struct TimelineData {
     pub title: Option<String>,
     pub events: Vec<TimelineEvent>,
     pub sections: Vec<String>,
+    pub direction: Option<Direction>,
 }
 
 #[derive(Debug, Clone, Default)]

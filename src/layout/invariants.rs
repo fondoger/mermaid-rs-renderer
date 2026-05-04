@@ -545,6 +545,8 @@ pub fn validate_layout_invariants(layout: &Layout) -> Result<(), Vec<LayoutInvar
                 ("timeline.line_y", tl.line_y),
                 ("timeline.line_start_x", tl.line_start_x),
                 ("timeline.line_end_x", tl.line_end_x),
+                ("timeline.line_start_y", tl.line_start_y),
+                ("timeline.line_end_y", tl.line_end_y),
             ] {
                 check_finite(&mut errors, path, value);
             }

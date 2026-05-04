@@ -365,9 +365,12 @@ pub struct TimelineLayout {
     pub title_y: f32,
     pub events: Vec<TimelineEventLayout>,
     pub sections: Vec<TimelineSectionLayout>,
+    pub direction: crate::ir::Direction,
     pub line_y: f32,
     pub line_start_x: f32,
     pub line_end_x: f32,
+    pub line_start_y: f32,
+    pub line_end_y: f32,
     pub width: f32,
     pub height: f32,
 }

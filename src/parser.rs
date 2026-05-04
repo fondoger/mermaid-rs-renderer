@@ -2088,6 +2088,15 @@ fn parse_journey_task_line(line: &str) -> Option<(String, Option<f32>, Vec<Strin
     Some((label, score, actors))
 }
 
+fn parse_timeline_header_direction(line: &str) -> Option<Direction> {
+    let mut parts = line.split_whitespace();
+    let header = parts.next()?;
+    if !header.eq_ignore_ascii_case("timeline") {
+        return None;
+    }
+    parts.next().and_then(Direction::from_timeline_token)
+}
+
 fn parse_timeline_diagram(input: &str) -> Result<ParseOutput> {
     let mut graph = Graph::new();
     graph.kind = DiagramKind::Timeline;
@@ -2119,6 +2128,10 @@ fn parse_timeline_diagram(input: &str) -> Result<ParseOutput> {
         }
         let lower = line.to_ascii_lowercase();
         if lower.starts_with("timeline") {
+            if let Some(direction) = parse_timeline_header_direction(line) {
+                graph.direction = direction;
+                graph.timeline.direction = Some(direction);
+            }
             continue;
         }
         if lower.starts_with("title") {
@@ -6759,10 +6772,22 @@ A["foo & bar"] & B --> C"#;
         let input = "timeline\n  title History\n  2020 : Launch\n  2021 : Growth";
         let parsed = parse_mermaid(input).unwrap();
         assert_eq!(parsed.graph.kind, DiagramKind::Timeline);
+        assert_eq!(parsed.graph.timeline.direction, None);
         assert_eq!(parsed.graph.timeline.events.len(), 2);
         assert_eq!(parsed.graph.timeline.title.as_deref(), Some("History"));
         assert_eq!(parsed.graph.timeline.events[0].time, "2020");
         assert_eq!(parsed.graph.timeline.events[0].events, vec!["Launch"]);
+    }
+
+    #[test]
+    fn parse_timeline_direction_headers() {
+        let parsed = parse_mermaid("timeline TD\n  2020 : Launch").unwrap();
+        assert_eq!(parsed.graph.direction, Direction::TopDown);
+        assert_eq!(parsed.graph.timeline.direction, Some(Direction::TopDown));
+
+        let parsed = parse_mermaid("timeline LR\n  2020 : Launch").unwrap();
+        assert_eq!(parsed.graph.direction, Direction::LeftRight);
+        assert_eq!(parsed.graph.timeline.direction, Some(Direction::LeftRight));
     }
 
     #[test]
