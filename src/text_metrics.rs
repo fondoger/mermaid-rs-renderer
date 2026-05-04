@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use ttf_parser::{Face, GlyphId};
 
 static TEXT_MEASURER: Lazy<Mutex<TextMeasurer>> = Lazy::new(|| Mutex::new(TextMeasurer::new()));
+const FONT_CACHE_VERSION: &str = "v2-font-family-case";
 
 pub fn measure_text_width(text: &str, font_size: f32, font_family: &str) -> Option<f32> {
     if text.is_empty() || font_size <= 0.0 {
@@ -65,6 +66,10 @@ impl TextMeasurer {
         if let Some(face) = load_cached_face(&family_key) {
             return Some(face);
         }
+        if !self.loaded_system_fonts {
+            self.db.load_system_fonts();
+            self.loaded_system_fonts = true;
+        }
         #[derive(Clone, Copy)]
         enum FamilyToken {
             Generic(fontdb::Family<'static>),
@@ -91,7 +96,9 @@ impl TextMeasurer {
                 "ui-monospace" => order.push(FamilyToken::Generic(Family::Monospace)),
                 _ => {
                     let idx = names.len();
-                    names.push(raw.to_string());
+                    names.push(
+                        canonical_family_name(&self.db, raw).unwrap_or_else(|| raw.to_string()),
+                    );
                     order.push(FamilyToken::Name(idx));
                 }
             }
@@ -106,11 +113,6 @@ impl TextMeasurer {
                 FamilyToken::Generic(family) => families.push(family),
                 FamilyToken::Name(idx) => families.push(Family::Name(names[idx].as_str())),
             }
-        }
-
-        if !self.loaded_system_fonts {
-            self.db.load_system_fonts();
-            self.loaded_system_fonts = true;
         }
 
         let query = Query {
@@ -229,13 +231,21 @@ impl FontFace {
     }
 }
 
+fn canonical_family_name(db: &Database, raw: &str) -> Option<String> {
+    db.faces()
+        .flat_map(|face| face.families.iter().map(|(family, _)| family))
+        .find(|family| family.eq_ignore_ascii_case(raw))
+        .cloned()
+}
+
 fn normalize_family_key(font_family: &str) -> String {
     let trimmed = font_family.trim();
-    if trimmed.is_empty() {
-        "sans-serif".to_string()
+    let family = if trimmed.is_empty() {
+        "sans-serif"
     } else {
-        trimmed.to_string()
-    }
+        trimmed
+    };
+    format!("{FONT_CACHE_VERSION}:{family}")
 }
 
 fn cache_paths(family_key: &str) -> Option<(PathBuf, PathBuf)> {
@@ -261,4 +271,44 @@ fn load_cached_face(family_key: &str) -> Option<FontFace> {
     let face = Face::parse(&bytes, index).ok()?;
     let units_per_em = face.units_per_em().max(1);
     Some(FontFace::new(bytes, index, units_per_em))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fontdb::{FaceInfo, ID, Language, Source};
+    use std::sync::Arc;
+
+    fn push_family(db: &mut Database, family: &str) {
+        db.push_face_info(FaceInfo {
+            id: ID::dummy(),
+            source: Source::Binary(Arc::new(Vec::<u8>::new())),
+            index: 0,
+            families: vec![(family.to_string(), Language::English_UnitedStates)],
+            post_script_name: family.replace(' ', ""),
+            style: Style::Normal,
+            weight: Weight::NORMAL,
+            stretch: Stretch::Normal,
+            monospaced: false,
+        });
+    }
+
+    #[test]
+    fn canonical_family_name_matches_case_insensitively() {
+        let mut db = Database::new();
+        push_family(&mut db, "Trebuchet MS");
+
+        assert_eq!(
+            canonical_family_name(&db, "trebuchet ms").as_deref(),
+            Some("Trebuchet MS")
+        );
+    }
+
+    #[test]
+    fn normalize_family_key_uses_versioned_cache_namespace() {
+        assert_eq!(
+            normalize_family_key("trebuchet ms"),
+            "v2-font-family-case:trebuchet ms"
+        );
+    }
 }
