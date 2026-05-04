@@ -1476,6 +1476,7 @@ struct ConfigFile {
     theme: Option<String>,
     theme_variables: Option<ThemeVariables>,
     preferred_aspect_ratio: Option<NumberOrString>,
+    fast_text_metrics: Option<bool>,
     flowchart: Option<FlowchartConfig>,
     pie: Option<PieConfigFile>,
     requirement: Option<RequirementConfigFile>,
@@ -1747,6 +1748,10 @@ pub fn load_config(path: Option<&Path>) -> anyhow::Result<Config> {
         .filter(|ratio| ratio.is_finite() && *ratio > 0.0)
     {
         config.layout.preferred_aspect_ratio = Some(ratio);
+    }
+
+    if let Some(fast_text) = parsed.fast_text_metrics {
+        config.layout.fast_text_metrics = fast_text;
     }
 
     if let Some(flow) = parsed.flowchart {
@@ -2846,5 +2851,43 @@ mod tests {
         let timeline = parsed.timeline.expect("timeline config");
 
         assert_eq!(timeline.default_direction.as_deref(), Some("TD"));
+    }
+
+    #[test]
+    fn fast_text_metrics_parses_from_camel_case() {
+        let parsed: ConfigFile =
+            serde_json::from_str(r##"{"fastTextMetrics": true}"##).expect("should parse");
+        assert_eq!(parsed.fast_text_metrics, Some(true));
+    }
+
+    #[test]
+    fn fast_text_metrics_applied_by_load_config() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "mermaid_rs_fast_text_metrics_{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, r##"{"fastTextMetrics": true}"##)
+            .expect("should write temp config");
+
+        let config = load_config(Some(&path)).expect("should load config");
+        assert!(config.layout.fast_text_metrics);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fast_text_metrics_default_is_false_when_absent() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "mermaid_rs_fast_text_metrics_absent_{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, "{}").expect("should write temp config");
+
+        let config = load_config(Some(&path)).expect("should load config");
+        assert!(!config.layout.fast_text_metrics);
+
+        let _ = std::fs::remove_file(&path);
     }
 }
