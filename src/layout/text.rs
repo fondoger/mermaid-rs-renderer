@@ -1,6 +1,7 @@
 use crate::config::LayoutConfig;
 use crate::text_metrics;
 use crate::theme::Theme;
+use crate::unicode_width::{Cluster, consume_cluster, is_cjk_wide_char};
 
 use super::TextBlock;
 
@@ -144,49 +145,9 @@ pub(super) fn char_width_factor(ch: char) -> f32 {
         '8' => 0.611,
         '9' => 0.595,
         '@' | '#' | '%' | '&' => 0.946,
-        _ if is_emoji_modifier_char(ch) => 0.0,
-        _ if is_cjk_wide_char(ch) || is_emoji_wide_char(ch) => 1.0,
+        _ if is_cjk_wide_char(ch) => 1.0,
         _ => 0.568,
     }
-}
-
-fn is_cjk_wide_char(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{1100}'..='\u{11ff}'
-            | '\u{2e80}'..='\u{a4cf}'
-            | '\u{a960}'..='\u{a97f}'
-            | '\u{ac00}'..='\u{d7ff}'
-            | '\u{f900}'..='\u{faff}'
-            | '\u{fe10}'..='\u{fe1f}'
-            | '\u{fe30}'..='\u{fe4f}'
-            | '\u{ff01}'..='\u{ff60}'
-            | '\u{ffe0}'..='\u{ffe6}'
-            | '\u{20000}'..='\u{2fa1f}'
-            | '\u{30000}'..='\u{323af}'
-    )
-}
-
-fn is_emoji_wide_char(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{2600}'..='\u{27bf}' | '\u{1f000}'..='\u{1faff}'
-    )
-}
-
-fn is_emoji_modifier_char(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{200d}' | '\u{20e3}' | '\u{fe00}'..='\u{fe0f}' | '\u{1f3fb}'..='\u{1f3ff}'
-    )
-}
-
-fn is_regional_indicator(ch: char) -> bool {
-    matches!(ch, '\u{1f1e6}'..='\u{1f1ff}')
-}
-
-fn is_keycap_starter(ch: char) -> bool {
-    ch.is_ascii_digit() || matches!(ch, '#' | '*')
 }
 
 pub(super) fn split_lines(text: &str) -> Vec<String> {
@@ -466,47 +427,15 @@ fn fallback_text_width(text: &str, font_size: f32) -> f32 {
     let mut width = 0.0;
     let mut idx = 0usize;
     while idx < chars.len() {
-        let ch = chars[idx];
-        if is_keycap_starter(ch) {
-            let next = idx + 1;
-            let keycap = if chars.get(next) == Some(&'\u{fe0f}') {
-                next + 1
-            } else {
-                next
+        if let Some((kind, new_idx)) = consume_cluster(&chars, idx) {
+            width += match kind {
+                Cluster::Wide => 1.0,
+                Cluster::ZeroWidth => 0.0,
             };
-            if chars.get(keycap) == Some(&'\u{20e3}') {
-                width += 1.0;
-                idx = keycap + 1;
-                continue;
-            }
-        }
-        if is_regional_indicator(ch)
-            && chars
-                .get(idx + 1)
-                .copied()
-                .is_some_and(is_regional_indicator)
-        {
-            width += 1.0;
-            idx += 2;
+            idx = new_idx;
             continue;
         }
-        if is_emoji_wide_char(ch) {
-            width += 1.0;
-            idx += 1;
-            while idx < chars.len() {
-                if chars[idx] == '\u{200d}'
-                    && chars.get(idx + 1).copied().is_some_and(is_emoji_wide_char)
-                {
-                    idx += 2;
-                } else if is_emoji_modifier_char(chars[idx]) {
-                    idx += 1;
-                } else {
-                    break;
-                }
-            }
-            continue;
-        }
-        width += char_width_factor(ch);
+        width += char_width_factor(chars[idx]);
         idx += 1;
     }
     width * font_size
@@ -560,20 +489,12 @@ mod tests {
     }
 
     #[test]
-    fn char_width_factor_treats_emoji_as_wide() {
-        for ch in ['🙂', '🚀', '☀', '❤'] {
-            assert_eq!(char_width_factor(ch), 1.0, "char {:?} should be wide", ch);
-        }
-    }
-
-    #[test]
-    fn char_width_factor_treats_emoji_modifiers_as_zero_width() {
-        for ch in ['🏽', '\u{fe0f}', '\u{200d}', '\u{20e3}'] {
+    fn fallback_text_width_treats_emoji_as_one_em() {
+        for text in ["🙂", "🚀", "☀", "❤"] {
             assert_eq!(
-                char_width_factor(ch),
-                0.0,
-                "char {:?} should be zero width",
-                ch
+                fallback_text_width(text, 16.0),
+                16.0,
+                "{text} should be 1em via fallback_text_width"
             );
         }
     }

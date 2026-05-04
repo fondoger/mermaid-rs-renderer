@@ -100,6 +100,7 @@ pub mod parser;
 pub mod render;
 mod text_metrics;
 pub mod theme;
+pub(crate) mod unicode_width;
 pub mod validator;
 
 // Re-export commonly used types at crate root for ergonomic library usage
