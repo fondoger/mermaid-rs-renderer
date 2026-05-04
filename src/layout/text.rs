@@ -25,8 +25,6 @@ pub(super) fn measure_label_with_font_size(
     wrap: bool,
     font_family: &str,
 ) -> TextBlock {
-    let raw_lines = split_lines(text);
-    let mut lines = Vec::new();
     let fast_metrics = config.fast_text_metrics;
     let max_width_px = max_label_width_px(
         config.max_label_width_chars,
@@ -34,9 +32,24 @@ pub(super) fn measure_label_with_font_size(
         font_family,
         fast_metrics,
     );
+    measure_label_with_max_width(text, font_size, max_width_px, config, wrap, font_family)
+}
+
+pub(super) fn measure_label_with_max_width(
+    text: &str,
+    font_size: f32,
+    max_width: f32,
+    config: &LayoutConfig,
+    wrap: bool,
+    font_family: &str,
+) -> TextBlock {
+    let raw_lines = split_lines(text);
+    let mut lines = Vec::new();
+    let fast_metrics = config.fast_text_metrics;
+    let max_width = max_width.max(1.0);
     for line in raw_lines {
         if wrap {
-            let wrapped = wrap_line(&line, max_width_px, font_size, font_family, fast_metrics);
+            let wrapped = wrap_line(&line, max_width, font_size, font_family, fast_metrics);
             lines.extend(wrapped);
         } else {
             lines.push(line);

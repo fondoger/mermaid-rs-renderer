@@ -3774,23 +3774,39 @@ fn render_timeline(
         ));
 
         // Time label (bold, at top of box)
-        svg.push_str(&format!(
-            "<text x=\"{:.2}\" y=\"{:.2}\" text-anchor=\"middle\" font-family=\"{}\" font-size=\"{:.1}\" font-weight=\"bold\" fill=\"{}\">{}</text>",
-            center_x, event.y + 20.0,
-            normalize_font_family(&theme.font_family), theme.font_size,
-            theme.primary_text_color, escape_xml(&event.time.lines.join(" "))
+        svg.push_str(&text_block_svg_with_font_size_weight(
+            center_x,
+            event.y + 20.0,
+            &event.time,
+            theme,
+            config,
+            theme.font_size,
+            "middle",
+            Some(theme.primary_text_color.as_str()),
+            Some("bold"),
+            true,
         ));
 
         // Event descriptions
-        let mut y_offset = 40.0;
+        let time_extra = event.time.lines.len().saturating_sub(1) as f32
+            * theme.font_size
+            * config.label_line_height;
+        let mut text_y = event.y + 40.0 + time_extra;
+        let event_font_size = theme.font_size * 0.9;
+        let event_line_height = event_font_size * config.label_line_height;
         for evt in &event.events {
-            svg.push_str(&format!(
-                "<text x=\"{:.2}\" y=\"{:.2}\" text-anchor=\"middle\" font-family=\"{}\" font-size=\"{:.1}\" fill=\"{}\">{}</text>",
-                center_x, event.y + y_offset,
-                normalize_font_family(&theme.font_family), theme.font_size * 0.9,
-                theme.primary_text_color, escape_xml(&evt.lines.join(" "))
+            svg.push_str(&text_block_svg_with_font_size(
+                center_x,
+                text_y,
+                evt,
+                theme,
+                config,
+                event_font_size,
+                "middle",
+                Some(theme.primary_text_color.as_str()),
+                true,
             ));
-            y_offset += theme.font_size * 1.2;
+            text_y += evt.lines.len() as f32 * event_line_height;
         }
     }
 

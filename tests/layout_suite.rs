@@ -412,6 +412,54 @@ fn render_all_fixtures() {
 }
 
 #[test]
+fn timeline_event_descriptions_wrap_inside_cards() {
+    let input = r#"timeline
+    title Timeline of Industrial Revolution
+    Industry 1.0 : Machinery, Water power, Steam <br>power
+    Industry 2.0 : Electricity, Internal combustion engine, Mass production
+"#;
+    let parsed = parse_mermaid(input).unwrap();
+    let theme = Theme::modern();
+    let config = LayoutConfig::default();
+    let layout = compute_layout(&parsed.graph, &theme, &config);
+    let DiagramData::Timeline(timeline) = &layout.diagram else {
+        panic!("expected timeline layout");
+    };
+
+    let wrapped = timeline
+        .events
+        .iter()
+        .find(|event| event.time.lines.join(" ") == "Industry 2.0")
+        .expect("expected Industry 2.0 event");
+    assert!(
+        wrapped.events[0].lines.len() > 1,
+        "expected long description to wrap: {:?}",
+        wrapped.events[0].lines
+    );
+    assert!(
+        wrapped.height > 80.0,
+        "event card height should expand for wrapped descriptions"
+    );
+
+    let explicit_break = timeline
+        .events
+        .iter()
+        .find(|event| event.time.lines.join(" ") == "Industry 1.0")
+        .expect("expected Industry 1.0 event");
+    assert!(
+        explicit_break.events[0]
+            .lines
+            .iter()
+            .any(|line| line == "power"),
+        "expected explicit <br> to survive as a separate rendered line"
+    );
+
+    let svg = render_svg(&layout, &theme, &config);
+    assert!(!svg.contains(">Electricity, Internal combustion engine, Mass production</text>"));
+    assert!(svg.contains(">power</tspan>"));
+}
+
+#[test]
 fn pie_outside_labels_do_not_intrude_into_right_legend() {
     let input = r#"pie
 "Dogs" : 386
