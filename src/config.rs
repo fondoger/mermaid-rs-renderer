@@ -2867,8 +2867,7 @@ mod tests {
             "mermaid_rs_fast_text_metrics_{}.json",
             std::process::id()
         ));
-        std::fs::write(&path, r##"{"fastTextMetrics": true}"##)
-            .expect("should write temp config");
+        std::fs::write(&path, r##"{"fastTextMetrics": true}"##).expect("should write temp config");
 
         let config = load_config(Some(&path)).expect("should load config");
         assert!(config.layout.fast_text_metrics);
