@@ -199,11 +199,68 @@ impl FontFace {
         let face = Face::parse(&self.data, self.index).ok()?;
         let scale = font_size / self.units_per_em as f32;
         let mut width = 0.0f32;
+        let chars: Vec<char> = text.chars().collect();
+        let mut idx = 0usize;
 
-        for ch in text.chars() {
+        while idx < chars.len() {
+            let ch = chars[idx];
             if ch == '\n' {
+                idx += 1;
                 continue;
             }
+
+            // Mirror fallback_text_width grapheme-cluster handling so both
+            // measurement paths agree on widths for CJK ideographs, kana,
+            // hangul, fullwidth chars, and emoji sequences. The OS will
+            // render these via system font fallback (e.g. PingFang on iOS)
+            // at roughly 1em even when the loaded face has no glyph for
+            // them — using 0.56em here under-measures CJK by ~44%.
+            if is_keycap_starter(ch) {
+                let next = idx + 1;
+                let keycap = if chars.get(next) == Some(&'\u{fe0f}') {
+                    next + 1
+                } else {
+                    next
+                };
+                if chars.get(keycap) == Some(&'\u{20e3}') {
+                    width += font_size;
+                    idx = keycap + 1;
+                    continue;
+                }
+            }
+            if is_regional_indicator(ch)
+                && chars
+                    .get(idx + 1)
+                    .copied()
+                    .is_some_and(is_regional_indicator)
+            {
+                width += font_size;
+                idx += 2;
+                continue;
+            }
+            if is_emoji_wide_char(ch) {
+                width += font_size;
+                idx += 1;
+                while idx < chars.len() {
+                    if chars[idx] == '\u{200d}'
+                        && chars.get(idx + 1).copied().is_some_and(is_emoji_wide_char)
+                    {
+                        idx += 2;
+                    } else if is_emoji_modifier_char(chars[idx]) {
+                        idx += 1;
+                    } else {
+                        break;
+                    }
+                }
+                continue;
+            }
+            if is_emoji_modifier_char(ch) {
+                // ZWJ / variation selectors / skin-tone modifiers contribute
+                // no advance on their own.
+                idx += 1;
+                continue;
+            }
+
             let glyph = if let Some(cached) = self.glyph_cache.get(&ch) {
                 *cached
             } else {
@@ -212,19 +269,21 @@ impl FontFace {
                 glyph
             };
 
-            let Some(glyph_id) = glyph else {
-                width += fallback;
-                continue;
-            };
-
-            let advance = if let Some(value) = self.advance_cache.get(&glyph_id) {
-                *value
+            if let Some(glyph_id) = glyph {
+                let advance = if let Some(value) = self.advance_cache.get(&glyph_id) {
+                    *value
+                } else {
+                    let value = face.glyph_hor_advance(GlyphId(glyph_id)).unwrap_or(0);
+                    self.advance_cache.insert(glyph_id, value);
+                    value
+                };
+                width += advance as f32 * scale;
+            } else if is_cjk_wide_char(ch) {
+                width += font_size;
             } else {
-                let value = face.glyph_hor_advance(GlyphId(glyph_id)).unwrap_or(0);
-                self.advance_cache.insert(glyph_id, value);
-                value
-            };
-            width += advance as f32 * scale;
+                width += fallback;
+            }
+            idx += 1;
         }
 
         Some(width.max(0.0))
@@ -236,6 +295,45 @@ fn canonical_family_name(db: &Database, raw: &str) -> Option<String> {
         .flat_map(|face| face.families.iter().map(|(family, _)| family))
         .find(|family| family.eq_ignore_ascii_case(raw))
         .cloned()
+}
+
+fn is_cjk_wide_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{1100}'..='\u{11ff}'
+            | '\u{2e80}'..='\u{a4cf}'
+            | '\u{a960}'..='\u{a97f}'
+            | '\u{ac00}'..='\u{d7ff}'
+            | '\u{f900}'..='\u{faff}'
+            | '\u{fe10}'..='\u{fe1f}'
+            | '\u{fe30}'..='\u{fe4f}'
+            | '\u{ff01}'..='\u{ff60}'
+            | '\u{ffe0}'..='\u{ffe6}'
+            | '\u{20000}'..='\u{2fa1f}'
+            | '\u{30000}'..='\u{323af}'
+    )
+}
+
+fn is_emoji_wide_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{2600}'..='\u{27bf}' | '\u{1f000}'..='\u{1faff}'
+    )
+}
+
+fn is_emoji_modifier_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{200d}' | '\u{20e3}' | '\u{fe00}'..='\u{fe0f}' | '\u{1f3fb}'..='\u{1f3ff}'
+    )
+}
+
+fn is_regional_indicator(ch: char) -> bool {
+    matches!(ch, '\u{1f1e6}'..='\u{1f1ff}')
+}
+
+fn is_keycap_starter(ch: char) -> bool {
+    ch.is_ascii_digit() || matches!(ch, '#' | '*')
 }
 
 fn normalize_family_key(font_family: &str) -> String {
@@ -259,6 +357,45 @@ fn cache_paths(family_key: &str) -> Option<(PathBuf, PathBuf)> {
     let font_path = dir.join(format!("{hash:x}.font"));
     let meta_path = dir.join(format!("{hash:x}.meta"));
     Some((font_path, meta_path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cjk_helper_recognises_common_ranges() {
+        for ch in ['中', '文', 'あ', 'カ', '한', '。', 'Ａ'] {
+            assert!(
+                is_cjk_wide_char(ch),
+                "char {:?} should be classified as CJK-wide",
+                ch
+            );
+        }
+    }
+
+    #[test]
+    fn cjk_helper_rejects_ascii_and_latin_extended() {
+        for ch in ['a', 'Z', '0', ' ', 'é', 'ß'] {
+            assert!(
+                !is_cjk_wide_char(ch),
+                "char {:?} should not be classified as CJK-wide",
+                ch
+            );
+        }
+    }
+
+    #[test]
+    fn emoji_helpers_classify_modifiers_and_wide() {
+        assert!(is_emoji_wide_char('\u{1f600}')); // grinning face
+        assert!(is_emoji_modifier_char('\u{200d}')); // ZWJ
+        assert!(is_emoji_modifier_char('\u{fe0f}')); // VS16
+        assert!(is_emoji_modifier_char('\u{1f3fb}')); // skin tone
+        assert!(is_regional_indicator('\u{1f1fa}')); // U
+        assert!(is_keycap_starter('1'));
+        assert!(is_keycap_starter('#'));
+        assert!(!is_keycap_starter('a'));
+    }
 }
 
 fn load_cached_face(family_key: &str) -> Option<FontFace> {
