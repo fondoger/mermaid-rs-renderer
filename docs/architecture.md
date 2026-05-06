@@ -27,6 +27,7 @@
 - Keep parsing + layout isolated per diagram type.
 
 ## Flowchart routing architecture
+- Detailed design and validation notes: [`docs/flowchart-routing-architecture.md`](flowchart-routing-architecture.md).
 - **Port assignment**: per-node side ordering based on target alignment; offsets can snap to
   the routing grid to stabilize edge paths.
 - **Port stubs**: edges exit nodes with a short orthogonal stub to normalize entry angles
