@@ -114,6 +114,148 @@ struct NodeBounds {
     max_y: f32,
 }
 
+const MAX_RESERVED_ROUTING_CHANNELS: usize = 36;
+const RANK_CHANNEL_MIN_GAP_RATIO: f32 = 0.70;
+const HUB_CHANNEL_MIN_DEGREE: usize = 4;
+const HUB_CHANNEL_PAD_RATIO: f32 = 0.78;
+
+fn push_reserved_channel(
+    channels: &mut Vec<ReservedRoutingChannel>,
+    channel: ReservedRoutingChannel,
+) {
+    if !channel.coord.is_finite()
+        || !channel.span_min.is_finite()
+        || !channel.span_max.is_finite()
+        || channel.span_max <= channel.span_min
+    {
+        return;
+    }
+    let duplicate = channels.iter().any(|existing| {
+        existing.axis == channel.axis
+            && (existing.coord - channel.coord).abs() <= 3.0
+            && existing.span_min <= channel.span_max
+            && channel.span_min <= existing.span_max
+    });
+    if !duplicate {
+        channels.push(channel);
+    }
+}
+
+fn build_flowchart_reserved_channels(
+    graph: &Graph,
+    nodes: &BTreeMap<String, NodeLayout>,
+    config: &LayoutConfig,
+) -> Vec<ReservedRoutingChannel> {
+    if graph.kind != DiagramKind::Flowchart || nodes.len() < 4 {
+        return Vec::new();
+    }
+    let Some(bounds) = visible_node_bounds(nodes) else {
+        return Vec::new();
+    };
+    let horizontal = is_horizontal(graph.direction);
+    let mut channels = Vec::new();
+    let span_pad = (config.node_spacing * 0.9).max(24.0);
+    let min_rank_gap = (config.node_spacing * RANK_CHANNEL_MIN_GAP_RATIO).max(18.0);
+
+    let mut intervals: Vec<(f32, f32)> = nodes
+        .values()
+        .filter(|node| !node.hidden && node.anchor_subgraph.is_none())
+        .map(|node| {
+            if horizontal {
+                (node.x, node.x + node.width)
+            } else {
+                (node.y, node.y + node.height)
+            }
+        })
+        .collect();
+    intervals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+    let mut prev_end: Option<f32> = None;
+    for (start, end) in intervals {
+        if let Some(prev) = prev_end {
+            let gap = start - prev;
+            if gap >= min_rank_gap {
+                let coord = (start + prev) * 0.5;
+                let (axis, span_min, span_max) = if horizontal {
+                    (
+                        ReservedRoutingChannelAxis::Vertical,
+                        bounds.min_y - span_pad,
+                        bounds.max_y + span_pad,
+                    )
+                } else {
+                    (
+                        ReservedRoutingChannelAxis::Horizontal,
+                        bounds.min_x - span_pad,
+                        bounds.max_x + span_pad,
+                    )
+                };
+                push_reserved_channel(
+                    &mut channels,
+                    ReservedRoutingChannel {
+                        axis,
+                        coord,
+                        span_min,
+                        span_max,
+                    },
+                );
+            }
+            prev_end = Some(prev.max(end));
+        } else {
+            prev_end = Some(end);
+        }
+    }
+
+    let mut degree_by_node: HashMap<&str, usize> = HashMap::new();
+    for edge in &graph.edges {
+        *degree_by_node.entry(edge.from.as_str()).or_insert(0) += 1;
+        *degree_by_node.entry(edge.to.as_str()).or_insert(0) += 1;
+    }
+    let hub_pad = (config.node_spacing * HUB_CHANNEL_PAD_RATIO).max(24.0);
+    let mut hubs: Vec<(&NodeLayout, usize)> = nodes
+        .values()
+        .filter(|node| !node.hidden && node.anchor_subgraph.is_none())
+        .filter_map(|node| {
+            let degree = degree_by_node.get(node.id.as_str()).copied().unwrap_or(0);
+            (degree >= HUB_CHANNEL_MIN_DEGREE).then_some((node, degree))
+        })
+        .collect();
+    hubs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.id.cmp(&b.0.id)));
+    for (node, _degree) in hubs.into_iter().take(8) {
+        let vertical_span_min = node.y - hub_pad;
+        let vertical_span_max = node.y + node.height + hub_pad;
+        let horizontal_span_min = node.x - hub_pad;
+        let horizontal_span_max = node.x + node.width + hub_pad;
+        for coord in [node.x - hub_pad, node.x + node.width + hub_pad] {
+            push_reserved_channel(
+                &mut channels,
+                ReservedRoutingChannel {
+                    axis: ReservedRoutingChannelAxis::Vertical,
+                    coord,
+                    span_min: vertical_span_min,
+                    span_max: vertical_span_max,
+                },
+            );
+        }
+        for coord in [node.y - hub_pad, node.y + node.height + hub_pad] {
+            push_reserved_channel(
+                &mut channels,
+                ReservedRoutingChannel {
+                    axis: ReservedRoutingChannelAxis::Horizontal,
+                    coord,
+                    span_min: horizontal_span_min,
+                    span_max: horizontal_span_max,
+                },
+            );
+        }
+        if channels.len() >= MAX_RESERVED_ROUTING_CHANNELS {
+            channels.truncate(MAX_RESERVED_ROUTING_CHANNELS);
+            break;
+        }
+    }
+
+    channels.truncate(MAX_RESERVED_ROUTING_CHANNELS);
+    channels
+}
+
 fn visible_node_bounds(nodes: &BTreeMap<String, NodeLayout>) -> Option<NodeBounds> {
     let mut bounds = NodeBounds {
         min_x: f32::MAX,
@@ -292,6 +434,7 @@ fn repair_flowchart_endpoint_reentries_by_rerouting(
     edge_ports: &mut [EdgePortInfo],
     lane_offsets: &[f32],
     routed_points: &mut [Vec<(f32, f32)>],
+    reserved_channels: &[ReservedRoutingChannel],
     config: &LayoutConfig,
 ) {
     const SIDES: [EdgeSide; 4] = [
@@ -388,6 +531,7 @@ fn repair_flowchart_endpoint_reentries_by_rerouting(
                     preferred_label_center: None,
                     preferred_label_obstacle: None,
                     preferred_label_clearance: 0.0,
+                    reserved_channels,
                     force_preferred_label_via: false,
                     coarse_grid_retry: true,
                 };
@@ -690,6 +834,7 @@ fn routed_side_candidate_score(
         preferred_label_center: None,
         preferred_label_obstacle: None,
         preferred_label_clearance: 0.0,
+        reserved_channels: &[],
         force_preferred_label_via: false,
         coarse_grid_retry: true,
     };
@@ -1016,6 +1161,7 @@ fn route_points_for_port_candidate(
         preferred_label_center: None,
         preferred_label_obstacle: None,
         preferred_label_clearance: 0.0,
+        reserved_channels: &[],
         force_preferred_label_via: false,
         coarse_grid_retry: true,
     };
@@ -1454,6 +1600,7 @@ fn optimize_flowchart_routes_globally(
     edge_label_pad_x: f32,
     edge_label_pad_y: f32,
     routed_points: &mut [Vec<(f32, f32)>],
+    reserved_channels: &[ReservedRoutingChannel],
     config: &LayoutConfig,
 ) {
     let passes = flowchart_global_route_passes(graph);
@@ -1553,6 +1700,7 @@ fn optimize_flowchart_routes_globally(
                     preferred_label_center: None,
                     preferred_label_obstacle,
                     preferred_label_clearance,
+                    reserved_channels,
                     force_preferred_label_via: false,
                     coarse_grid_retry: true,
                 };
@@ -1648,6 +1796,7 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
     } else {
         None
     };
+    let reserved_channels = build_flowchart_reserved_channels(graph, nodes, config);
     let mut stage_metrics = stage_metrics;
 
     let port_assignment_start = Instant::now();
@@ -2223,6 +2372,7 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
             preferred_label_center,
             preferred_label_obstacle,
             preferred_label_clearance,
+            reserved_channels: &reserved_channels,
             force_preferred_label_via: graph.kind != DiagramKind::Flowchart,
             coarse_grid_retry: graph.kind == DiagramKind::Flowchart,
         };
@@ -2263,6 +2413,7 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
                 preferred_label_center: route_ctx.preferred_label_center,
                 preferred_label_obstacle: route_ctx.preferred_label_obstacle,
                 preferred_label_clearance: route_ctx.preferred_label_clearance,
+                reserved_channels: route_ctx.reserved_channels,
                 force_preferred_label_via: route_ctx.force_preferred_label_via,
                 coarse_grid_retry: route_ctx.coarse_grid_retry,
             };
@@ -2333,6 +2484,7 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
             edge_label_pad_x,
             edge_label_pad_y,
             &mut routed_points,
+            &reserved_channels,
             config,
         );
     }
@@ -2402,6 +2554,7 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
             &mut edge_ports,
             &lane_offsets,
             &mut routed_points,
+            &reserved_channels,
             config,
         );
         path_cleanup::repair_flowchart_endpoint_reentries(graph, nodes, &mut routed_points, config);
@@ -2626,5 +2779,52 @@ mod tests {
             *points.last().unwrap(),
             points[points.len() - 2]
         ));
+    }
+
+    #[test]
+    fn flowchart_reserved_channels_cover_rank_gaps_and_hubs() {
+        let mut graph = Graph::new();
+        graph.kind = DiagramKind::Flowchart;
+        graph.direction = crate::ir::Direction::LeftRight;
+        graph.edges = vec![
+            edge("a", "hub"),
+            edge("b", "hub"),
+            edge("hub", "c"),
+            edge("hub", "d"),
+        ];
+
+        let mut nodes = BTreeMap::new();
+        for (id, x, y) in [
+            ("a", 0.0, 0.0),
+            ("b", 0.0, 140.0),
+            ("hub", 240.0, 70.0),
+            ("c", 500.0, 0.0),
+            ("d", 500.0, 140.0),
+        ] {
+            let mut layout = node(NodeShape::Rectangle);
+            layout.id = id.to_string();
+            layout.x = x;
+            layout.y = y;
+            nodes.insert(id.to_string(), layout);
+        }
+
+        let channels = build_flowchart_reserved_channels(&graph, &nodes, &LayoutConfig::default());
+
+        assert!(
+            channels.iter().any(
+                |channel| channel.axis == ReservedRoutingChannelAxis::Vertical
+                    && channel.coord > 120.0
+                    && channel.coord < 240.0
+            ),
+            "expected a reserved vertical channel in the first rank gap: {channels:?}"
+        );
+        assert!(
+            channels.iter().any(
+                |channel| channel.axis == ReservedRoutingChannelAxis::Horizontal
+                    && channel.span_min < 240.0
+                    && channel.span_max > 360.0
+            ),
+            "expected hub-side horizontal channels around the dense hub: {channels:?}"
+        );
     }
 }

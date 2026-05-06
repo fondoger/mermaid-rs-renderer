@@ -2411,6 +2411,7 @@ flowchart LR
             preferred_label_center: None,
             preferred_label_obstacle: None,
             preferred_label_clearance: 0.0,
+            reserved_channels: &[],
             force_preferred_label_via: true,
             coarse_grid_retry: true,
         };
@@ -2458,6 +2459,7 @@ flowchart LR
             preferred_label_center: None,
             preferred_label_obstacle: None,
             preferred_label_clearance: 0.0,
+            reserved_channels: &[],
             force_preferred_label_via: true,
             coarse_grid_retry: true,
         };
@@ -2505,6 +2507,7 @@ flowchart LR
             preferred_label_center: None,
             preferred_label_obstacle: None,
             preferred_label_clearance: 0.0,
+            reserved_channels: &[],
             force_preferred_label_via: true,
             coarse_grid_retry: true,
         };
@@ -2577,6 +2580,7 @@ flowchart LR
             preferred_label_center: Some(preferred),
             preferred_label_obstacle: None,
             preferred_label_clearance: 0.0,
+            reserved_channels: &[],
             force_preferred_label_via: true,
             coarse_grid_retry: true,
         };
@@ -2626,6 +2630,7 @@ flowchart LR
             preferred_label_center: None,
             preferred_label_obstacle: Some(&label_obstacles[0]),
             preferred_label_clearance: clearance,
+            reserved_channels: &[],
             force_preferred_label_via: false,
             coarse_grid_retry: true,
         };

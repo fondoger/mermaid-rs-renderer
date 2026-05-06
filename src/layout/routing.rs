@@ -125,6 +125,22 @@ pub(super) struct Obstacle {
     pub(super) members: Option<HashSet<String>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReservedRoutingChannelAxis {
+    Vertical,
+    Horizontal,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ReservedRoutingChannel {
+    pub(super) axis: ReservedRoutingChannelAxis,
+    /// `x` for vertical channels, `y` for horizontal channels.
+    pub(super) coord: f32,
+    /// Inclusive span on the opposite axis where this corridor is useful.
+    pub(super) span_min: f32,
+    pub(super) span_max: f32,
+}
+
 pub(super) fn is_horizontal(direction: Direction) -> bool {
     matches!(direction, Direction::LeftRight | Direction::RightLeft)
 }
@@ -409,6 +425,7 @@ pub(super) struct RouteContext<'a> {
     pub(super) preferred_label_center: Option<(f32, f32)>,
     pub(super) preferred_label_obstacle: Option<&'a Obstacle>,
     pub(super) preferred_label_clearance: f32,
+    pub(super) reserved_channels: &'a [ReservedRoutingChannel],
     pub(super) force_preferred_label_via: bool,
     pub(super) coarse_grid_retry: bool,
 }
@@ -1494,6 +1511,83 @@ fn push_preferred_label_detour_candidates(
     }
 }
 
+fn channel_candidate_score(
+    channel: &ReservedRoutingChannel,
+    route_start: (f32, f32),
+    route_end: (f32, f32),
+    config: &LayoutConfig,
+) -> Option<f32> {
+    let channel_pad = (config.node_spacing * 1.2).max(24.0);
+    let (span_min, span_max, mid_coord) = match channel.axis {
+        ReservedRoutingChannelAxis::Vertical => (
+            route_start.1.min(route_end.1),
+            route_start.1.max(route_end.1),
+            (route_start.0 + route_end.0) * 0.5,
+        ),
+        ReservedRoutingChannelAxis::Horizontal => (
+            route_start.0.min(route_end.0),
+            route_start.0.max(route_end.0),
+            (route_start.1 + route_end.1) * 0.5,
+        ),
+    };
+
+    let span_miss = if span_max < channel.span_min - channel_pad {
+        channel.span_min - channel_pad - span_max
+    } else if span_min > channel.span_max + channel_pad {
+        span_min - channel.span_max - channel_pad
+    } else {
+        0.0
+    };
+    if span_miss > channel_pad * 2.0 {
+        return None;
+    }
+
+    Some((channel.coord - mid_coord).abs() + span_miss * 1.5)
+}
+
+fn push_reserved_channel_candidates(
+    ctx: &RouteContext<'_>,
+    route_start: (f32, f32),
+    route_end: (f32, f32),
+    existing_segments: &[((f32, f32), (f32, f32))],
+    use_existing: bool,
+    candidates: &mut Vec<RouteCandidate>,
+) {
+    if ctx.reserved_channels.is_empty() {
+        return;
+    }
+
+    let direct_manhattan =
+        (route_end.0 - route_start.0).abs() + (route_end.1 - route_start.1).abs();
+    let max_detour = direct_manhattan * 2.4 + ctx.config.node_spacing * 5.0;
+    let mut channels: Vec<(f32, ReservedRoutingChannel)> = ctx
+        .reserved_channels
+        .iter()
+        .filter_map(|channel| {
+            channel_candidate_score(channel, route_start, route_end, ctx.config)
+                .map(|score| (score, *channel))
+        })
+        .collect();
+    channels.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+
+    for (_, channel) in channels.into_iter().take(8) {
+        let points = match channel.axis {
+            ReservedRoutingChannelAxis::Vertical => {
+                let x = channel.coord;
+                vec![route_start, (x, route_start.1), (x, route_end.1), route_end]
+            }
+            ReservedRoutingChannelAxis::Horizontal => {
+                let y = channel.coord;
+                vec![route_start, (route_start.0, y), (route_end.0, y), route_end]
+            }
+        };
+        if path_length(&points) > max_detour {
+            continue;
+        }
+        push_route_candidate(points, ctx, existing_segments, use_existing, candidates);
+    }
+}
+
 pub(super) fn route_edge_with_avoidance(
     ctx: &RouteContext<'_>,
     occupancy: Option<&EdgeOccupancy>,
@@ -1705,6 +1799,15 @@ pub(super) fn route_edge_with_avoidance(
     }
 
     push_preferred_label_detour_candidates(
+        ctx,
+        route_start,
+        route_end,
+        existing_segments,
+        use_existing,
+        &mut candidates,
+    );
+
+    push_reserved_channel_candidates(
         ctx,
         route_start,
         route_end,
