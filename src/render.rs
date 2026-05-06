@@ -765,7 +765,7 @@ pub fn render_svg_with_dimensions(
             if let Some(point) = edge.points.first().copied()
                 && let Some(decoration) = edge.start_decoration
             {
-                let angle = edge_endpoint_angle(&edge.points, true);
+                let angle = crate::edge_geometry::edge_endpoint_angle(&edge.points, true);
                 svg.push_str(&edge_decoration_svg(
                     point,
                     angle,
@@ -778,7 +778,7 @@ pub fn render_svg_with_dimensions(
             if let Some(point) = edge.points.last().copied()
                 && let Some(decoration) = edge.end_decoration
             {
-                let angle = edge_endpoint_angle(&edge.points, false);
+                let angle = crate::edge_geometry::edge_endpoint_angle(&edge.points, false);
                 svg.push_str(&edge_decoration_svg(
                     point,
                     angle,
@@ -1055,13 +1055,14 @@ pub fn render_svg_with_dimensions(
                 if edge.arrow_start
                     && let Some(point) = edge.points.first().copied()
                 {
-                    let angle = edge_endpoint_angle(&edge.points, true) + 180.0;
+                    let angle =
+                        crate::edge_geometry::edge_endpoint_angle(&edge.points, true) + 180.0;
                     svg.push_str(&arrowhead_svg(point, angle, stroke.as_str(), stroke_width));
                 }
                 if edge.arrow_end
                     && let Some(point) = edge.points.last().copied()
                 {
-                    let angle = edge_endpoint_angle(&edge.points, false);
+                    let angle = crate::edge_geometry::edge_endpoint_angle(&edge.points, false);
                     svg.push_str(&arrowhead_svg(point, angle, stroke.as_str(), stroke_width));
                 }
             }
@@ -1069,7 +1070,7 @@ pub fn render_svg_with_dimensions(
             if let Some(point) = edge.points.first().copied()
                 && let Some(decoration) = edge.start_decoration
             {
-                let angle = edge_endpoint_angle(&edge.points, true);
+                let angle = crate::edge_geometry::edge_endpoint_angle(&edge.points, true);
                 svg.push_str(&edge_decoration_svg(
                     point,
                     angle,
@@ -1082,7 +1083,7 @@ pub fn render_svg_with_dimensions(
             if let Some(point) = edge.points.last().copied()
                 && let Some(decoration) = edge.end_decoration
             {
-                let angle = edge_endpoint_angle(&edge.points, false);
+                let angle = crate::edge_geometry::edge_endpoint_angle(&edge.points, false);
                 svg.push_str(&edge_decoration_svg(
                     point,
                     angle,
@@ -5840,20 +5841,6 @@ fn arrowhead_svg(point: (f32, f32), angle_deg: f32, stroke: &str, stroke_width: 
     )
 }
 
-fn edge_endpoint_angle(points: &[(f32, f32)], start: bool) -> f32 {
-    if points.len() < 2 {
-        return 0.0;
-    }
-    let (p0, p1) = if start {
-        (points[0], points[1])
-    } else {
-        (points[points.len() - 2], points[points.len() - 1])
-    };
-    let dx = p1.0 - p0.0;
-    let dy = p1.1 - p0.1;
-    dy.atan2(dx).to_degrees()
-}
-
 #[cfg(feature = "png")]
 fn primary_font(fonts: &str) -> String {
     fonts
@@ -6386,8 +6373,14 @@ mod tests {
     #[test]
     fn flowchart_arrowhead_angle_uses_endpoint_tangent() {
         let points = vec![(10.0, 10.0), (20.0, 10.0), (40.0, 30.0)];
-        assert_eq!(edge_endpoint_angle(&points, true), 0.0);
-        assert_eq!(edge_endpoint_angle(&points, false), 45.0);
+        assert_eq!(
+            crate::edge_geometry::edge_endpoint_angle(&points, true),
+            0.0
+        );
+        assert_eq!(
+            crate::edge_geometry::edge_endpoint_angle(&points, false),
+            45.0
+        );
     }
 
     #[test]

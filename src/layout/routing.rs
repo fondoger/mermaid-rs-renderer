@@ -6,6 +6,12 @@ use crate::ir::Direction;
 
 use super::{NodeLayout, SubgraphLayout};
 
+pub(super) use super::geometry::{
+    EdgeSide, path_bend_count, path_length, path_point_at_progress, ray_ellipse_intersection,
+    ray_polygon_intersection, segment_hits_node_shape_interior, segments_intersect,
+    shape_polygon_points,
+};
+
 // ── Edge side selection ──────────────────────────────────────────────
 /// Aspect-ratio threshold for preferring horizontal vs vertical edge sides.
 const DIRECTION_PREF_RATIO: f32 = 1.35;
@@ -87,14 +93,6 @@ const ROUTE_OWN_LABEL_NEAR_WEIGHT: usize = 3;
 const LABEL_OBSTACLE_NODE_PAD: f32 = 2.0;
 /// Padding around subgraph labels when building label obstacles.
 const LABEL_OBSTACLE_SUB_PAD: f32 = 3.0;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum EdgeSide {
-    Left,
-    Right,
-    Top,
-    Bottom,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum PortAxis {
@@ -848,156 +846,6 @@ pub(super) fn port_stub_point(point: (f32, f32), side: EdgeSide, length: f32) ->
     }
 }
 
-pub(super) fn shape_polygon_points(node: &NodeLayout) -> Option<Vec<(f32, f32)>> {
-    let x = node.x;
-    let y = node.y;
-    let w = node.width;
-    let h = node.height;
-    match node.shape {
-        crate::ir::NodeShape::Rectangle
-        | crate::ir::NodeShape::RoundRect
-        | crate::ir::NodeShape::ActorBox
-        | crate::ir::NodeShape::Stadium
-        | crate::ir::NodeShape::Subroutine
-        | crate::ir::NodeShape::Text => Some(vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h)]),
-        crate::ir::NodeShape::Diamond => {
-            let cx = x + w / 2.0;
-            let cy = y + h / 2.0;
-            Some(vec![(cx, y), (x + w, cy), (cx, y + h), (x, cy)])
-        }
-        crate::ir::NodeShape::Hexagon => {
-            let x1 = x + w * 0.25;
-            let x2 = x + w * 0.75;
-            let y_mid = y + h / 2.0;
-            Some(vec![
-                (x1, y),
-                (x2, y),
-                (x + w, y_mid),
-                (x2, y + h),
-                (x1, y + h),
-                (x, y_mid),
-            ])
-        }
-        crate::ir::NodeShape::Parallelogram | crate::ir::NodeShape::ParallelogramAlt => {
-            let offset = w * 0.18;
-            let points = if node.shape == crate::ir::NodeShape::Parallelogram {
-                vec![
-                    (x + offset, y),
-                    (x + w, y),
-                    (x + w - offset, y + h),
-                    (x, y + h),
-                ]
-            } else {
-                vec![
-                    (x, y),
-                    (x + w - offset, y),
-                    (x + w, y + h),
-                    (x + offset, y + h),
-                ]
-            };
-            Some(points)
-        }
-        crate::ir::NodeShape::Trapezoid | crate::ir::NodeShape::TrapezoidAlt => {
-            let offset = w * 0.18;
-            let points = if node.shape == crate::ir::NodeShape::Trapezoid {
-                vec![
-                    (x + offset, y),
-                    (x + w - offset, y),
-                    (x + w, y + h),
-                    (x, y + h),
-                ]
-            } else {
-                vec![
-                    (x, y),
-                    (x + w, y),
-                    (x + w - offset, y + h),
-                    (x + offset, y + h),
-                ]
-            };
-            Some(points)
-        }
-        crate::ir::NodeShape::Asymmetric => {
-            let slant = w * 0.22;
-            Some(vec![
-                (x, y),
-                (x + w - slant, y),
-                (x + w, y + h / 2.0),
-                (x + w - slant, y + h),
-                (x, y + h),
-            ])
-        }
-        _ => None,
-    }
-}
-
-pub(super) fn ray_polygon_intersection(
-    origin: (f32, f32),
-    dir: (f32, f32),
-    poly: &[(f32, f32)],
-) -> Option<(f32, f32)> {
-    let mut best_t = None;
-    let ox = origin.0;
-    let oy = origin.1;
-    let rx = dir.0;
-    let ry = dir.1;
-    if poly.len() < 2 {
-        return None;
-    }
-    for i in 0..poly.len() {
-        let (x1, y1) = poly[i];
-        let (x2, y2) = poly[(i + 1) % poly.len()];
-        let sx = x2 - x1;
-        let sy = y2 - y1;
-        let qx = x1 - ox;
-        let qy = y1 - oy;
-        let denom = rx * sy - ry * sx;
-        if denom.abs() < 1e-6 {
-            continue;
-        }
-        let t = (qx * sy - qy * sx) / denom;
-        let u = (qx * ry - qy * rx) / denom;
-        if t >= 0.0 && (0.0..=1.0).contains(&u) {
-            match best_t {
-                Some(best) if t >= best => {}
-                _ => best_t = Some(t),
-            }
-        }
-    }
-    best_t.map(|t| (ox + rx * t, oy + ry * t))
-}
-
-pub(super) fn ray_ellipse_intersection(
-    origin: (f32, f32),
-    dir: (f32, f32),
-    center: (f32, f32),
-    rx: f32,
-    ry: f32,
-) -> Option<(f32, f32)> {
-    let (ox, oy) = origin;
-    let (dx, dy) = dir;
-    let (cx, cy) = center;
-    let ox = ox - cx;
-    let oy = oy - cy;
-    let a = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
-    let b = 2.0 * ((ox * dx) / (rx * rx) + (oy * dy) / (ry * ry));
-    let c = (ox * ox) / (rx * rx) + (oy * oy) / (ry * ry) - 1.0;
-    let disc = b * b - 4.0 * a * c;
-    if disc < 0.0 || a.abs() < 1e-6 {
-        return None;
-    }
-    let sqrt_disc = disc.sqrt();
-    let t1 = (-b - sqrt_disc) / (2.0 * a);
-    let t2 = (-b + sqrt_disc) / (2.0 * a);
-    let t = if t1 >= 0.0 {
-        t1
-    } else if t2 >= 0.0 {
-        t2
-    } else {
-        return None;
-    };
-    Some((origin.0 + dx * t, origin.1 + dy * t))
-}
-
 /// Compute where a straight line from `remote` to `node`'s centre would
 /// cross `node`'s boundary on `side`.  Returns the coordinate along the
 /// side's axis (x for Top/Bottom, y for Left/Right) – i.e. the ideal
@@ -1471,53 +1319,6 @@ pub(super) fn path_coords_reasonable(points: &[(f32, f32)]) -> bool {
     points
         .iter()
         .all(|(x, y)| x.is_finite() && y.is_finite() && x.abs() <= LIMIT && y.abs() <= LIMIT)
-}
-
-fn point_in_polygon_strict(point: (f32, f32), polygon: &[(f32, f32)]) -> bool {
-    if polygon.len() < 3 {
-        return false;
-    }
-    let mut inside = false;
-    let (px, py) = point;
-    let mut prev = polygon[polygon.len() - 1];
-    for &curr in polygon {
-        if (curr.1 > py) != (prev.1 > py) {
-            let denom = prev.1 - curr.1;
-            if denom.abs() > 1e-6 {
-                let x_at_y = (prev.0 - curr.0) * (py - curr.1) / denom + curr.0;
-                if px < x_at_y {
-                    inside = !inside;
-                }
-            }
-        }
-        prev = curr;
-    }
-    inside
-}
-
-fn point_inside_node_shape_strict(node: &NodeLayout, point: (f32, f32)) -> bool {
-    let eps = 0.5;
-    match node.shape {
-        crate::ir::NodeShape::Circle | crate::ir::NodeShape::DoubleCircle => {
-            let cx = node.x + node.width * 0.5;
-            let cy = node.y + node.height * 0.5;
-            let rx = (node.width * 0.5 - eps).max(1.0);
-            let ry = (node.height * 0.5 - eps).max(1.0);
-            let nx = (point.0 - cx) / rx;
-            let ny = (point.1 - cy) / ry;
-            nx * nx + ny * ny < 1.0
-        }
-        _ => shape_polygon_points(node)
-            .is_some_and(|polygon| point_in_polygon_strict(point, &polygon)),
-    }
-}
-
-fn segment_hits_node_shape_interior(a: (f32, f32), b: (f32, f32), node: &NodeLayout) -> bool {
-    let steps = (((b.0 - a.0).hypot(b.1 - a.1) / 4.0).ceil() as usize).max(1);
-    (1..steps).any(|i| {
-        let t = i as f32 / steps as f32;
-        point_inside_node_shape_strict(node, (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t))
-    })
 }
 
 fn path_endpoint_intrusions(points: &[(f32, f32)], ctx: &RouteContext<'_>) -> usize {
@@ -2429,67 +2230,6 @@ fn path_existing_proximity_penalty(
     penalty
 }
 
-pub(super) fn path_length(points: &[(f32, f32)]) -> f32 {
-    let mut length = 0.0;
-    for segment in points.windows(2) {
-        let dx = segment[1].0 - segment[0].0;
-        let dy = segment[1].1 - segment[0].1;
-        length += (dx * dx + dy * dy).sqrt();
-    }
-    length
-}
-
-pub(super) fn path_point_at_progress(points: &[(f32, f32)], progress: f32) -> Option<(f32, f32)> {
-    if points.len() < 2 {
-        return None;
-    }
-    let total = path_length(points);
-    if !total.is_finite() || total <= 1e-6 {
-        return Some(points[0]);
-    }
-    let mut remain = total * progress.clamp(0.0, 1.0);
-    for segment in points.windows(2) {
-        let a = segment[0];
-        let b = segment[1];
-        let dx = b.0 - a.0;
-        let dy = b.1 - a.1;
-        let seg_len = (dx * dx + dy * dy).sqrt();
-        if seg_len <= 1e-6 {
-            continue;
-        }
-        if remain <= seg_len {
-            let t = remain / seg_len;
-            return Some((a.0 + dx * t, a.1 + dy * t));
-        }
-        remain -= seg_len;
-    }
-    points.last().copied()
-}
-
-pub(super) fn path_bend_count(points: &[(f32, f32)]) -> usize {
-    if points.len() < 3 {
-        return 0;
-    }
-    let mut bends = 0usize;
-    for idx in 1..points.len() - 1 {
-        let p0 = points[idx - 1];
-        let p1 = points[idx];
-        let p2 = points[idx + 1];
-        let dx1 = p1.0 - p0.0;
-        let dy1 = p1.1 - p0.1;
-        let dx2 = p2.0 - p1.0;
-        let dy2 = p2.1 - p1.1;
-        if (dx1.abs() <= 1e-4 && dy1.abs() <= 1e-4) || (dx2.abs() <= 1e-4 && dy2.abs() <= 1e-4) {
-            continue;
-        }
-        let cross = dx1 * dy2 - dy1 * dx2;
-        if cross.abs() > 1e-4 {
-            bends += 1;
-        }
-    }
-    bends
-}
-
 pub(super) fn edge_label_anchor_from_points(points: &[(f32, f32)]) -> Option<(f32, f32)> {
     // Center labels should stay on the geometric midpoint of the routed path
     // (arc-length progress 0.5), not merely the midpoint of the longest run.
@@ -2697,86 +2437,10 @@ pub(super) fn build_edge_pair_counts(
 }
 
 pub(super) fn segment_intersects_rect(a: (f32, f32), b: (f32, f32), rect: &Obstacle) -> bool {
-    let (x1, y1) = a;
-    let (x2, y2) = b;
-    let min_x = x1.min(x2);
-    let max_x = x1.max(x2);
-    let min_y = y1.min(y2);
-    let max_y = y1.max(y2);
-    if max_x < rect.x
-        || min_x > rect.x + rect.width
-        || max_y < rect.y
-        || min_y > rect.y + rect.height
-    {
-        return false;
-    }
-    if x1 >= rect.x && x1 <= rect.x + rect.width && y1 >= rect.y && y1 <= rect.y + rect.height {
-        return true;
-    }
-    if x2 >= rect.x && x2 <= rect.x + rect.width && y2 >= rect.y && y2 <= rect.y + rect.height {
-        return true;
-    }
-    let corners = [
-        (rect.x, rect.y),
-        (rect.x + rect.width, rect.y),
-        (rect.x + rect.width, rect.y + rect.height),
-        (rect.x, rect.y + rect.height),
-    ];
-    let edges = [
-        (corners[0], corners[1]),
-        (corners[1], corners[2]),
-        (corners[2], corners[3]),
-        (corners[3], corners[0]),
-    ];
-    for (c, d) in edges {
-        if segments_intersect(a, b, c, d) {
-            return true;
-        }
-    }
-    false
+    super::geometry::segment_intersects_rect_bounds(a, b, (rect.x, rect.y, rect.width, rect.height))
 }
 
 pub(super) type Segment = ((f32, f32), (f32, f32));
-
-pub(super) fn segments_intersect(
-    a: (f32, f32),
-    b: (f32, f32),
-    c: (f32, f32),
-    d: (f32, f32),
-) -> bool {
-    fn orient(a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> f32 {
-        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
-    }
-    fn on_segment(a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> bool {
-        let min_x = a.0.min(b.0);
-        let max_x = a.0.max(b.0);
-        let min_y = a.1.min(b.1);
-        let max_y = a.1.max(b.1);
-        c.0 >= min_x - 1e-6 && c.0 <= max_x + 1e-6 && c.1 >= min_y - 1e-6 && c.1 <= max_y + 1e-6
-    }
-    let o1 = orient(a, b, c);
-    let o2 = orient(a, b, d);
-    let o3 = orient(c, d, a);
-    let o4 = orient(c, d, b);
-    if (o1 > 0.0 && o2 < 0.0 || o1 < 0.0 && o2 > 0.0)
-        && (o3 > 0.0 && o4 < 0.0 || o3 < 0.0 && o4 > 0.0)
-    {
-        return true;
-    }
-    if o1.abs() <= 1e-6 && on_segment(a, b, c) {
-        return true;
-    }
-    if o2.abs() <= 1e-6 && on_segment(a, b, d) {
-        return true;
-    }
-    if o3.abs() <= 1e-6 && on_segment(c, d, a) {
-        return true;
-    }
-    if o4.abs() <= 1e-6 && on_segment(c, d, b) {
-        return true;
-    }
-    false
-}
 
 pub(super) fn collinear_overlap_length(
     a: (f32, f32),

@@ -4,6 +4,7 @@ mod c4;
 mod error;
 mod flowchart;
 mod gantt;
+mod geometry;
 mod gitgraph;
 mod invariants;
 mod journey;

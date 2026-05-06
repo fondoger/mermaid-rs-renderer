@@ -54,6 +54,25 @@ pub(crate) fn apply_endpoint_insets(
     path
 }
 
+/// Angle, in degrees, of the path tangent at the requested endpoint.
+///
+/// Arrowheads must follow the final routed segment, not a guessed side of the
+/// endpoint node. This helper is shared so renderers and future validators agree
+/// on marker direction.
+pub(crate) fn edge_endpoint_angle(points: &[(f32, f32)], start: bool) -> f32 {
+    if points.len() < 2 {
+        return 0.0;
+    }
+    let (p0, p1) = if start {
+        (points[0], points[1])
+    } else {
+        (points[points.len() - 2], points[points.len() - 1])
+    };
+    let dx = p1.0 - p0.0;
+    let dy = p1.1 - p0.1;
+    dy.atan2(dx).to_degrees()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,5 +86,12 @@ mod tests {
 
         let short = vec![(0.0, 0.0), (2.0, 0.0)];
         assert_eq!(apply_endpoint_insets(short.clone(), 3.0, 3.0), short);
+    }
+
+    #[test]
+    fn endpoint_angle_uses_requested_endpoint_tangent() {
+        let points = vec![(0.0, 0.0), (10.0, 0.0), (20.0, 10.0)];
+        assert_eq!(edge_endpoint_angle(&points, true), 0.0);
+        assert_eq!(edge_endpoint_angle(&points, false), 45.0);
     }
 }

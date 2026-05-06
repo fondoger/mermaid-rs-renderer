@@ -5,6 +5,7 @@ use std::time::Instant;
 use crate::config::LayoutConfig;
 use crate::ir::{DiagramKind, Graph};
 
+use super::super::geometry::{endpoint_side_for_point, side_points_outward};
 use super::super::label_placement;
 use super::super::routing::*;
 use super::super::{
@@ -134,25 +135,6 @@ fn visible_node_bounds(nodes: &BTreeMap<String, NodeLayout>) -> Option<NodeBound
     any.then_some(bounds)
 }
 
-fn outward_port_stub(point: (f32, f32), side: EdgeSide, len: f32) -> (f32, f32) {
-    match side {
-        EdgeSide::Left => (point.0 - len, point.1),
-        EdgeSide::Right => (point.0 + len, point.1),
-        EdgeSide::Top => (point.0, point.1 - len),
-        EdgeSide::Bottom => (point.0, point.1 + len),
-    }
-}
-
-fn segment_points_outward(side: EdgeSide, endpoint: (f32, f32), outside: (f32, f32)) -> bool {
-    let eps = 0.5;
-    match side {
-        EdgeSide::Left => outside.0 <= endpoint.0 + eps,
-        EdgeSide::Right => outside.0 >= endpoint.0 - eps,
-        EdgeSide::Top => outside.1 <= endpoint.1 + eps,
-        EdgeSide::Bottom => outside.1 >= endpoint.1 - eps,
-    }
-}
-
 fn enforce_flowchart_endpoint_ports(
     graph: &Graph,
     nodes: &BTreeMap<String, NodeLayout>,
@@ -164,22 +146,44 @@ fn enforce_flowchart_endpoint_ports(
         .max(6.0)
         .min(config.node_spacing.max(MIN_NODE_SPACING_FLOOR) * 0.35);
     for (idx, edge) in graph.edges.iter().enumerate() {
-        if edge.from == edge.to {
-            continue;
-        }
         let Some(points) = routed_points.get_mut(idx) else {
             continue;
         };
         if points.len() < 2 {
             continue;
         }
+        if edge.from == edge.to {
+            if let Some(node) = nodes.get(&edge.from) {
+                let start_side = endpoint_side_for_point(node, points[0]);
+                if !side_points_outward(start_side, points[0], points[1]) {
+                    let stub = port_stub_point(points[0], start_side, stub_len);
+                    if (stub.0 - points[1].0).abs() > 0.5 || (stub.1 - points[1].1).abs() > 0.5 {
+                        points.insert(1, stub);
+                    }
+                }
+                let len = points.len();
+                if len >= 2 {
+                    let end = points[len - 1];
+                    let prev = points[len - 2];
+                    let end_side = endpoint_side_for_point(node, end);
+                    if !side_points_outward(end_side, end, prev) {
+                        let stub = port_stub_point(end, end_side, stub_len);
+                        if (stub.0 - prev.0).abs() > 0.5 || (stub.1 - prev.1).abs() > 0.5 {
+                            points.insert(len - 1, stub);
+                        }
+                    }
+                }
+                *points = compress_path(points);
+            }
+            continue;
+        }
         let Some(port) = edge_ports.get(idx).copied() else {
             continue;
         };
         if nodes.get(&edge.from).is_some()
-            && !segment_points_outward(port.start_side, points[0], points[1])
+            && !side_points_outward(port.start_side, points[0], points[1])
         {
-            let stub = outward_port_stub(points[0], port.start_side, stub_len);
+            let stub = port_stub_point(points[0], port.start_side, stub_len);
             if (stub.0 - points[1].0).abs() > 0.5 || (stub.1 - points[1].1).abs() > 0.5 {
                 points.insert(1, stub);
             }
@@ -187,9 +191,9 @@ fn enforce_flowchart_endpoint_ports(
         let len = points.len();
         if len >= 2
             && nodes.get(&edge.to).is_some()
-            && !segment_points_outward(port.end_side, points[len - 1], points[len - 2])
+            && !side_points_outward(port.end_side, points[len - 1], points[len - 2])
         {
-            let stub = outward_port_stub(points[len - 1], port.end_side, stub_len);
+            let stub = port_stub_point(points[len - 1], port.end_side, stub_len);
             if (stub.0 - points[len - 2].0).abs() > 0.5 || (stub.1 - points[len - 2].1).abs() > 0.5
             {
                 points.insert(len - 1, stub);
@@ -1342,12 +1346,58 @@ mod tests {
         );
 
         let points = &routed_points[0];
-        assert!(segment_points_outward(
-            EdgeSide::Right,
-            points[0],
-            points[1]
+        assert!(side_points_outward(EdgeSide::Right, points[0], points[1]));
+        assert!(side_points_outward(
+            EdgeSide::Left,
+            *points.last().unwrap(),
+            points[points.len() - 2]
         ));
-        assert!(segment_points_outward(
+    }
+
+    #[test]
+    fn endpoint_port_enforcement_repairs_self_loop_final_leg() {
+        let mut graph = Graph::new();
+        graph.edges.push(Edge {
+            from: "a".to_string(),
+            to: "a".to_string(),
+            label: None,
+            start_label: None,
+            end_label: None,
+            directed: true,
+            arrow_start: false,
+            arrow_end: true,
+            arrow_start_kind: None,
+            arrow_end_kind: None,
+            start_decoration: None,
+            end_decoration: None,
+            style: EdgeStyle::Solid,
+        });
+
+        let mut nodes = BTreeMap::new();
+        let mut a = node(NodeShape::Rectangle);
+        a.id = "a".to_string();
+        nodes.insert("a".to_string(), a);
+
+        let mut routed_points = vec![vec![
+            (120.0, 40.0),
+            (140.0, 40.0),
+            (140.0, 100.0),
+            (10.0, 100.0),
+            (10.0, 40.0),
+            (0.0, 40.0),
+        ]];
+
+        enforce_flowchart_endpoint_ports(
+            &graph,
+            &nodes,
+            &[],
+            &mut routed_points,
+            &LayoutConfig::default(),
+        );
+
+        let points = &routed_points[0];
+        assert!(side_points_outward(EdgeSide::Right, points[0], points[1]));
+        assert!(side_points_outward(
             EdgeSide::Left,
             *points.last().unwrap(),
             points[points.len() - 2]
