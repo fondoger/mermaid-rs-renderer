@@ -1055,23 +1055,13 @@ pub fn render_svg_with_dimensions(
                 if edge.arrow_start
                     && let Some(point) = edge.points.first().copied()
                 {
-                    let angle = edge_endpoint_angle(&edge.points, true);
-                    let angle = layout
-                        .nodes
-                        .get(&edge.from)
-                        .and_then(|node| flowchart_endpoint_arrow_angle(point, node))
-                        .unwrap_or(angle + 180.0);
+                    let angle = edge_endpoint_angle(&edge.points, true) + 180.0;
                     svg.push_str(&arrowhead_svg(point, angle, stroke.as_str(), stroke_width));
                 }
                 if edge.arrow_end
                     && let Some(point) = edge.points.last().copied()
                 {
                     let angle = edge_endpoint_angle(&edge.points, false);
-                    let angle = layout
-                        .nodes
-                        .get(&edge.to)
-                        .and_then(|node| flowchart_endpoint_arrow_angle(point, node))
-                        .unwrap_or(angle);
                     svg.push_str(&arrowhead_svg(point, angle, stroke.as_str(), stroke_width));
                 }
             }
@@ -5838,8 +5828,8 @@ fn edge_decoration_svg(
 }
 
 fn arrowhead_svg(point: (f32, f32), angle_deg: f32, stroke: &str, stroke_width: f32) -> String {
-    let size = (stroke_width * 2.2 + 6.0).clamp(6.0, 14.0);
-    let half = size * 0.6;
+    let size = (stroke_width * 1.5 + 4.5).clamp(5.5, 10.0);
+    let half = size * 0.52;
     let (x, y) = point;
     let join = " stroke-linejoin=\"round\" stroke-linecap=\"round\"";
     format!(
@@ -5848,25 +5838,6 @@ fn arrowhead_svg(point: (f32, f32), angle_deg: f32, stroke: &str, stroke_width: 
         half = half,
         neg_half = -half,
     )
-}
-
-fn flowchart_endpoint_arrow_angle(
-    point: (f32, f32),
-    node: &crate::layout::NodeLayout,
-) -> Option<f32> {
-    if node.hidden {
-        return None;
-    }
-    let left = (point.0 - node.x).abs();
-    let right = (point.0 - (node.x + node.width)).abs();
-    let top = (point.1 - node.y).abs();
-    let bottom = (point.1 - (node.y + node.height)).abs();
-    let (dist, angle) = [(left, 0.0), (right, 180.0), (top, 90.0), (bottom, -90.0)]
-        .into_iter()
-        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal))?;
-
-    let tolerance = node.width.max(node.height).max(1.0) * 0.25;
-    (dist <= tolerance).then_some(angle)
 }
 
 fn edge_endpoint_angle(points: &[(f32, f32)], start: bool) -> f32 {
@@ -6413,42 +6384,10 @@ mod tests {
     }
 
     #[test]
-    fn flowchart_endpoint_arrow_angle_points_from_attached_node_side() {
-        let node = crate::layout::NodeLayout {
-            id: "A".to_string(),
-            x: 10.0,
-            y: 20.0,
-            width: 100.0,
-            height: 60.0,
-            label: crate::layout::TextBlock {
-                lines: vec!["A".to_string()],
-                width: 10.0,
-                height: 10.0,
-            },
-            shape: crate::ir::NodeShape::Rectangle,
-            style: crate::ir::NodeStyle::default(),
-            link: None,
-            anchor_subgraph: None,
-            hidden: false,
-            icon: None,
-        };
-
-        assert_eq!(
-            flowchart_endpoint_arrow_angle((10.0, 50.0), &node),
-            Some(0.0)
-        );
-        assert_eq!(
-            flowchart_endpoint_arrow_angle((110.0, 50.0), &node),
-            Some(180.0)
-        );
-        assert_eq!(
-            flowchart_endpoint_arrow_angle((60.0, 20.0), &node),
-            Some(90.0)
-        );
-        assert_eq!(
-            flowchart_endpoint_arrow_angle((60.0, 80.0), &node),
-            Some(-90.0)
-        );
+    fn flowchart_arrowhead_angle_uses_endpoint_tangent() {
+        let points = vec![(10.0, 10.0), (20.0, 10.0), (40.0, 30.0)];
+        assert_eq!(edge_endpoint_angle(&points, true), 0.0);
+        assert_eq!(edge_endpoint_angle(&points, false), 45.0);
     }
 
     #[test]
