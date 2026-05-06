@@ -1316,6 +1316,288 @@ fn refine_flowchart_ports_with_route_candidates(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct GlobalRouteScore {
+    hard: usize,
+    endpoint_reentries: usize,
+    non_endpoint_hits: usize,
+    label_hits: usize,
+    crossings: usize,
+    overlap: f32,
+    bends: usize,
+    len: f32,
+}
+
+fn global_route_score_is_better(candidate: GlobalRouteScore, best: GlobalRouteScore) -> bool {
+    if candidate.hard != best.hard {
+        return candidate.hard < best.hard;
+    }
+    if candidate.endpoint_reentries != best.endpoint_reentries {
+        return candidate.endpoint_reentries < best.endpoint_reentries;
+    }
+    if candidate.non_endpoint_hits != best.non_endpoint_hits {
+        return candidate.non_endpoint_hits < best.non_endpoint_hits;
+    }
+    if candidate.label_hits != best.label_hits {
+        return candidate.label_hits < best.label_hits;
+    }
+    if candidate.crossings != best.crossings {
+        return candidate.crossings < best.crossings;
+    }
+    if (candidate.overlap - best.overlap).abs() > 0.05 {
+        return candidate.overlap < best.overlap;
+    }
+    if candidate.bends != best.bends {
+        return candidate.bends < best.bends;
+    }
+    candidate.len + 1.0 < best.len
+}
+
+fn score_global_route_candidate(
+    points: &[(f32, f32)],
+    edge: &crate::ir::Edge,
+    nodes: &BTreeMap<String, NodeLayout>,
+    obstacles: &[Obstacle],
+    label_obstacles: &[Obstacle],
+    existing_segments: &[Segment],
+    preferred_label_id: Option<&str>,
+) -> GlobalRouteScore {
+    let direction_violations =
+        path_cleanup::flowchart_endpoint_direction_violation_count(points, edge, nodes);
+    let obstacle_hits = path_obstacle_intersections(points, obstacles, &edge.from, &edge.to);
+    let non_endpoint_hits = usize::from(path_cleanup::flowchart_path_hits_non_endpoint_nodes(
+        points, &edge.from, &edge.to, nodes,
+    ));
+    let endpoint_reentries = path_cleanup::flowchart_endpoint_reentry_count(points, edge, nodes);
+    let label_hits = path_label_intersections(points, label_obstacles, preferred_label_id);
+    let (crossings, overlap) = if existing_segments.is_empty() {
+        (0usize, 0.0)
+    } else {
+        edge_crossings_with_existing(points, existing_segments)
+    };
+    GlobalRouteScore {
+        hard: direction_violations + obstacle_hits,
+        endpoint_reentries,
+        non_endpoint_hits,
+        label_hits,
+        crossings,
+        overlap,
+        bends: path_bend_count(points),
+        len: path_length(points),
+    }
+}
+
+fn flowchart_global_route_passes(graph: &Graph) -> usize {
+    if graph.kind != DiagramKind::Flowchart || graph.edges.len() < 3 {
+        0
+    } else if graph.edges.len() <= 48 {
+        2
+    } else if graph.edges.len() <= 128 {
+        1
+    } else {
+        0
+    }
+}
+
+fn occupancy_from_other_routes(
+    routed_points: &[Vec<(f32, f32)>],
+    excluded_idx: usize,
+    config: &LayoutConfig,
+) -> Option<EdgeOccupancy> {
+    if routed_points.len() <= 2 {
+        return None;
+    }
+    let mut occupancy = EdgeOccupancy::new(
+        config.node_spacing.max(MIN_NODE_SPACING_FLOOR) * EDGE_OCCUPANCY_CELL_RATIO,
+    );
+    let mut any = false;
+    for (idx, points) in routed_points.iter().enumerate() {
+        if idx == excluded_idx || points.len() < 2 {
+            continue;
+        }
+        occupancy.add_path(points);
+        any = true;
+    }
+    any.then_some(occupancy)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn optimize_flowchart_routes_globally(
+    graph: &Graph,
+    nodes: &BTreeMap<String, NodeLayout>,
+    subgraphs: &[SubgraphLayout],
+    obstacles: &[Obstacle],
+    route_label_obstacles: &mut Vec<Obstacle>,
+    routing_grid: Option<&RoutingGrid>,
+    edge_ports: &[EdgePortInfo],
+    lane_offsets: &[f32],
+    route_order: &[(u8, f32, f32, usize)],
+    route_labels_via: bool,
+    route_label_plans: &mut [Option<route_labels::RouteLabelPlan>],
+    label_anchors: &mut [Option<(f32, f32)>],
+    edge_route_labels: &[Option<TextBlock>],
+    edge_label_pad_x: f32,
+    edge_label_pad_y: f32,
+    routed_points: &mut [Vec<(f32, f32)>],
+    config: &LayoutConfig,
+) {
+    let passes = flowchart_global_route_passes(graph);
+    if passes == 0 {
+        return;
+    }
+
+    let mut order: Vec<usize> = route_order.iter().map(|(_, _, _, idx)| *idx).collect();
+    if order.len() != graph.edges.len() {
+        order = (0..graph.edges.len()).collect();
+    }
+
+    for _ in 0..passes {
+        let mut changed = false;
+        for &idx in &order {
+            let Some(edge) = graph.edges.get(idx) else {
+                continue;
+            };
+            if edge.from == edge.to || routed_points.get(idx).is_none_or(|points| points.len() < 2)
+            {
+                continue;
+            }
+            let Some((from, to)) = effective_edge_endpoint_layouts(graph, nodes, subgraphs, edge)
+            else {
+                continue;
+            };
+            let port_info = edge_ports.get(idx).copied().unwrap_or(EdgePortInfo {
+                start_side: EdgeSide::Right,
+                end_side: EdgeSide::Left,
+                start_offset: 0.0,
+                end_offset: 0.0,
+            });
+            let existing_segments = collect_other_flowchart_segments(routed_points, idx);
+            let preferred_label = route_label_plans
+                .get(idx)
+                .and_then(|plan| plan.as_ref())
+                .map(|plan| (plan.obstacle_id.clone(), plan.obstacle_index));
+            let preferred_label_id = preferred_label.as_ref().map(|(id, _)| id.as_str());
+            let preferred_label_clearance =
+                (edge_label_pad_x.max(edge_label_pad_y) + config.node_spacing * 0.25).max(8.0);
+            let baseline = score_global_route_candidate(
+                &routed_points[idx],
+                edge,
+                nodes,
+                obstacles,
+                route_label_obstacles,
+                &existing_segments,
+                preferred_label_id,
+            );
+            let stub_len = port_stub_length(config, &from, &to);
+            let max_edge_label_chars = [
+                edge.label.as_deref(),
+                edge.start_label.as_deref(),
+                edge.end_label.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .map(|label| label.chars().count())
+            .max()
+            .unwrap_or(0);
+            let has_endpoint_label = edge.start_label.is_some() || edge.end_label.is_some();
+            let avoid_short_tie = has_endpoint_label
+                || max_edge_label_chars >= FLOWCHART_EDGE_LABEL_WRAP_TRIGGER_CHARS;
+            let occupancy = occupancy_from_other_routes(routed_points, idx, config);
+            let mut candidate = {
+                let preferred_label_obstacle = preferred_label
+                    .as_ref()
+                    .and_then(|(_, obstacle_index)| route_label_obstacles.get(*obstacle_index));
+                let route_ctx = RouteContext {
+                    from_id: &edge.from,
+                    to_id: &edge.to,
+                    from: &from,
+                    to: &to,
+                    direction: graph.direction,
+                    config,
+                    obstacles,
+                    label_obstacles: route_label_obstacles,
+                    fast_route: false,
+                    base_offset: lane_offsets.get(idx).copied().unwrap_or_default(),
+                    start_side: port_info.start_side,
+                    end_side: port_info.end_side,
+                    start_offset: port_info.start_offset,
+                    end_offset: port_info.end_offset,
+                    stub_len,
+                    start_inset: if edge.arrow_start {
+                        crate::edge_geometry::arrowhead_inset(graph.kind, edge.arrow_start_kind)
+                    } else {
+                        0.0
+                    },
+                    end_inset: if edge.arrow_end {
+                        crate::edge_geometry::arrowhead_inset(graph.kind, edge.arrow_end_kind)
+                    } else {
+                        0.0
+                    },
+                    prefer_shorter_ties: !avoid_short_tie,
+                    preferred_label_id,
+                    preferred_label_center: None,
+                    preferred_label_obstacle,
+                    preferred_label_clearance,
+                    force_preferred_label_via: false,
+                    coarse_grid_retry: true,
+                };
+                route_edge_with_avoidance(
+                    &route_ctx,
+                    occupancy.as_ref(),
+                    routing_grid,
+                    Some(existing_segments.as_slice()),
+                )
+            };
+            if route_labels_via {
+                let mut sync_ctx = route_labels::RouteLabelSyncContext {
+                    direction: graph.direction,
+                    kind: graph.kind,
+                    route_label_plans,
+                    label_anchors,
+                    edge_route_labels,
+                    route_label_obstacles,
+                    edge_label_pad_x,
+                    edge_label_pad_y,
+                    update_obstacle: true,
+                };
+                route_labels::sync_route_label_plan_with_points(idx, &mut candidate, &mut sync_ctx);
+            }
+            let score = score_global_route_candidate(
+                &candidate,
+                edge,
+                nodes,
+                obstacles,
+                route_label_obstacles,
+                &existing_segments,
+                preferred_label_id,
+            );
+
+            if baseline.hard == 0 && score.hard > 0 {
+                continue;
+            }
+            if baseline.non_endpoint_hits == 0 && score.non_endpoint_hits > 0 {
+                continue;
+            }
+            if score.endpoint_reentries > baseline.endpoint_reentries {
+                continue;
+            }
+            if score.bends > baseline.bends + 2 && score.len > baseline.len * 1.8 {
+                continue;
+            }
+            if score.len > baseline.len * 3.0 + config.node_spacing * 4.0 {
+                continue;
+            }
+            if global_route_score_is_better(score, baseline) {
+                routed_points[idx] = candidate;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
 pub(in crate::layout) struct RoutedEdgeBuildContext<'a> {
     pub(in crate::layout) graph: &'a Graph,
     pub(in crate::layout) nodes: &'a BTreeMap<String, NodeLayout>,
@@ -2016,6 +2298,28 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
             }
         }
         routed_points[*idx] = points;
+    }
+
+    if graph.kind == DiagramKind::Flowchart {
+        optimize_flowchart_routes_globally(
+            graph,
+            nodes,
+            subgraphs,
+            &obstacles,
+            &mut route_label_obstacles,
+            routing_grid.as_ref(),
+            &edge_ports,
+            &lane_offsets,
+            &route_order,
+            route_labels_via,
+            &mut route_label_plans,
+            &mut label_anchors,
+            edge_route_labels,
+            edge_label_pad_x,
+            edge_label_pad_y,
+            &mut routed_points,
+            config,
+        );
     }
 
     post_route::apply_edge_path_cleanup(graph, nodes, &mut routed_points, config);
