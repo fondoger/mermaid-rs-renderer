@@ -499,15 +499,90 @@ fn candidate_vertical_sides(from: &NodeLayout, to: &NodeLayout) -> (EdgeSide, Ed
     }
 }
 
-fn push_unique_side_candidate(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RoutedSideSearchProfile {
+    max_candidates: usize,
+    fast_route: bool,
+    use_grid: bool,
+    use_existing_segments: bool,
+}
+
+fn flowchart_side_search_profile(
+    graph: &Graph,
+    layout_node_count: usize,
+    tiny_graph: bool,
+) -> Option<RoutedSideSearchProfile> {
+    if graph.kind != DiagramKind::Flowchart || graph.edges.is_empty() {
+        return None;
+    }
+
+    let edge_count = graph.edges.len();
+    let node_count = layout_node_count.max(1);
+    let dense = edge_count.saturating_mul(2) >= node_count.saturating_mul(3);
+    let compound = !graph.subgraphs.is_empty();
+
+    // Port-side scoring is now available for every flowchart, including compound
+    // graphs. Keep the expensive full router for small/medium diagrams where it
+    // materially improves ports, and fall back to bounded fast scoring for large
+    // or dense diagrams so port assignment remains predictable.
+    let profile = if edge_count <= 64 {
+        RoutedSideSearchProfile {
+            max_candidates: 5,
+            fast_route: tiny_graph,
+            use_grid: !tiny_graph,
+            use_existing_segments: true,
+        }
+    } else if edge_count <= 160 || compound || dense {
+        RoutedSideSearchProfile {
+            max_candidates: 4,
+            fast_route: true,
+            use_grid: false,
+            use_existing_segments: edge_count <= 160,
+        }
+    } else {
+        RoutedSideSearchProfile {
+            max_candidates: 3,
+            fast_route: true,
+            use_grid: false,
+            use_existing_segments: false,
+        }
+    };
+
+    Some(profile)
+}
+
+fn push_unique_side_candidate_limited(
     candidates: &mut Vec<(EdgeSide, EdgeSide, bool)>,
     candidate: (EdgeSide, EdgeSide, bool),
+    limit: usize,
 ) {
-    if !candidates
+    if candidates
         .iter()
         .any(|(start, end, _)| *start == candidate.0 && *end == candidate.1)
     {
+        return;
+    }
+    if candidates.len() < limit.max(1) {
         candidates.push(candidate);
+    }
+}
+
+fn push_priority_side_candidate_limited(
+    candidates: &mut Vec<(EdgeSide, EdgeSide, bool)>,
+    candidate: (EdgeSide, EdgeSide, bool),
+    limit: usize,
+) {
+    if candidates
+        .iter()
+        .any(|(start, end, _)| *start == candidate.0 && *end == candidate.1)
+    {
+        return;
+    }
+    let limit = limit.max(1);
+    if candidates.len() < limit {
+        candidates.push(candidate);
+    } else if let Some(slot) = candidates.last_mut() {
+        *slot = candidate;
     }
 }
 
@@ -527,7 +602,7 @@ fn routed_side_candidate_score(
     routing_grid: Option<&RoutingGrid>,
     existing_segments: &[Segment],
     config: &LayoutConfig,
-    tiny_graph: bool,
+    profile: RoutedSideSearchProfile,
 ) -> f32 {
     let route_ctx = RouteContext {
         from_id,
@@ -538,7 +613,7 @@ fn routed_side_candidate_score(
         config,
         obstacles,
         label_obstacles,
-        fast_route: tiny_graph,
+        fast_route: profile.fast_route,
         base_offset: 0.0,
         start_side: candidate.0,
         end_side: candidate.1,
@@ -556,7 +631,8 @@ fn routed_side_candidate_score(
         coarse_grid_retry: true,
     };
     let existing = (!existing_segments.is_empty()).then_some(existing_segments);
-    let points = route_edge_with_avoidance(&route_ctx, None, routing_grid, existing);
+    let grid = profile.use_grid.then_some(routing_grid).flatten();
+    let points = route_edge_with_avoidance(&route_ctx, None, grid, existing);
     let hard_hits = path_obstacle_intersections(&points, obstacles, from_id, to_id) as f32;
     let label_hits = path_label_intersections(&points, label_obstacles, None) as f32;
     let (crossings, overlap) = if existing_segments.is_empty() {
@@ -621,20 +697,36 @@ fn choose_routed_flowchart_sides(
     routing_grid: Option<&RoutingGrid>,
     existing_segments: &[Segment],
     config: &LayoutConfig,
-    tiny_graph: bool,
+    profile: RoutedSideSearchProfile,
 ) -> (EdgeSide, EdgeSide, bool) {
-    let mut candidates = Vec::with_capacity(5);
-    push_unique_side_candidate(&mut candidates, primary);
-    push_unique_side_candidate(&mut candidates, balanced);
-    push_unique_side_candidate(&mut candidates, candidate_horizontal_sides(from, to));
-    push_unique_side_candidate(&mut candidates, candidate_vertical_sides(from, to));
+    let mut candidates = Vec::with_capacity(profile.max_candidates.max(1));
+    push_unique_side_candidate_limited(&mut candidates, primary, profile.max_candidates);
+    push_unique_side_candidate_limited(&mut candidates, balanced, profile.max_candidates);
+
+    let horizontal = candidate_horizontal_sides(from, to);
+    let vertical = candidate_vertical_sides(from, to);
+    let from_c = node_center(from);
+    let to_c = node_center(to);
+    if (to_c.0 - from_c.0).abs() >= (to_c.1 - from_c.1).abs() {
+        push_unique_side_candidate_limited(&mut candidates, horizontal, profile.max_candidates);
+        push_unique_side_candidate_limited(&mut candidates, vertical, profile.max_candidates);
+    } else {
+        push_unique_side_candidate_limited(&mut candidates, vertical, profile.max_candidates);
+        push_unique_side_candidate_limited(&mut candidates, horizontal, profile.max_candidates);
+    }
     if edge_role.is_back_edge {
-        push_unique_side_candidate(
+        push_priority_side_candidate_limited(
             &mut candidates,
             choose_outer_back_edge_sides(from, to, graph_direction, content_bounds, balanced),
+            profile.max_candidates,
         );
     }
 
+    let scored_existing_segments = if profile.use_existing_segments {
+        existing_segments
+    } else {
+        &[]
+    };
     let mut best = primary;
     let mut best_score = f32::INFINITY;
     for candidate in candidates {
@@ -652,9 +744,9 @@ fn choose_routed_flowchart_sides(
             obstacles,
             label_obstacles,
             routing_grid,
-            existing_segments,
+            scored_existing_segments,
             config,
-            tiny_graph,
+            profile,
         );
         if score < best_score {
             best_score = score;
@@ -710,6 +802,8 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
     }
     let edge_roles = roles::classify_edge_roles(graph);
     let mut side_loads: HashMap<String, [usize; 4]> = HashMap::new();
+    let routed_side_search_profile =
+        flowchart_side_search_profile(graph, layout_node_count, tiny_graph);
     let mut edge_ports: Vec<EdgePortInfo> = vec![
         EdgePortInfo {
             start_side: EdgeSide::Right,
@@ -761,12 +855,10 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
             &node_degrees,
             &side_loads,
         );
-        let use_routed_side_search = graph.kind == DiagramKind::Flowchart
-            && use_balanced_sides
+        let mut selected_sides = if use_balanced_sides
             && edge.from != edge.to
-            && graph.subgraphs.is_empty()
-            && graph.edges.len() <= 32;
-        let mut selected_sides = if use_routed_side_search {
+            && let Some(profile) = routed_side_search_profile
+        {
             choose_routed_flowchart_sides(
                 &edge.from,
                 &edge.to,
@@ -784,7 +876,7 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
                 routing_grid.as_ref(),
                 &side_choice_segments,
                 config,
-                tiny_graph,
+                profile,
             )
         } else if use_balanced_sides {
             if edge_role.is_back_edge {
@@ -1459,8 +1551,26 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{Edge, EdgeStyle, NodeShape, NodeStyle};
+    use crate::ir::{Edge, EdgeStyle, NodeShape, NodeStyle, Subgraph};
     use crate::layout::TextBlock;
+
+    fn edge(from: &str, to: &str) -> Edge {
+        Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            label: None,
+            start_label: None,
+            end_label: None,
+            directed: true,
+            arrow_start: false,
+            arrow_end: true,
+            arrow_start_kind: None,
+            arrow_end_kind: None,
+            start_decoration: None,
+            end_decoration: None,
+            style: EdgeStyle::Solid,
+        }
+    }
 
     fn node(shape: NodeShape) -> NodeLayout {
         NodeLayout {
@@ -1514,23 +1624,41 @@ mod tests {
     }
 
     #[test]
+    fn side_search_profile_includes_compound_flowcharts() {
+        let mut graph = Graph::new();
+        graph.edges = (0..40).map(|_| edge("a", "b")).collect();
+        graph.subgraphs.push(Subgraph {
+            id: Some("cluster".to_string()),
+            label: "cluster".to_string(),
+            nodes: vec!["a".to_string()],
+            direction: None,
+            icon: None,
+        });
+
+        let profile = flowchart_side_search_profile(&graph, 12, false)
+            .expect("compound flowcharts should use route-scored side search");
+        assert_eq!(profile.max_candidates, 5);
+        assert!(!profile.fast_route);
+        assert!(profile.use_grid);
+    }
+
+    #[test]
+    fn side_search_profile_bounds_large_flowcharts() {
+        let mut graph = Graph::new();
+        graph.edges = (0..200).map(|_| edge("a", "b")).collect();
+
+        let profile = flowchart_side_search_profile(&graph, 200, false)
+            .expect("large flowcharts should still get bounded side search");
+        assert_eq!(profile.max_candidates, 3);
+        assert!(profile.fast_route);
+        assert!(!profile.use_grid);
+        assert!(!profile.use_existing_segments);
+    }
+
+    #[test]
     fn endpoint_port_enforcement_repairs_inward_segments() {
         let mut graph = Graph::new();
-        graph.edges.push(Edge {
-            from: "a".to_string(),
-            to: "b".to_string(),
-            label: None,
-            start_label: None,
-            end_label: None,
-            directed: true,
-            arrow_start: false,
-            arrow_end: true,
-            arrow_start_kind: None,
-            arrow_end_kind: None,
-            start_decoration: None,
-            end_decoration: None,
-            style: EdgeStyle::Solid,
-        });
+        graph.edges.push(edge("a", "b"));
 
         let mut nodes = BTreeMap::new();
         let mut a = node(NodeShape::Rectangle);
@@ -1574,21 +1702,7 @@ mod tests {
     #[test]
     fn endpoint_port_enforcement_repairs_self_loop_final_leg() {
         let mut graph = Graph::new();
-        graph.edges.push(Edge {
-            from: "a".to_string(),
-            to: "a".to_string(),
-            label: None,
-            start_label: None,
-            end_label: None,
-            directed: true,
-            arrow_start: false,
-            arrow_end: true,
-            arrow_start_kind: None,
-            arrow_end_kind: None,
-            start_decoration: None,
-            end_decoration: None,
-            style: EdgeStyle::Solid,
-        });
+        graph.edges.push(edge("a", "a"));
 
         let mut nodes = BTreeMap::new();
         let mut a = node(NodeShape::Rectangle);
