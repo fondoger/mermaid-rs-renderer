@@ -5,6 +5,7 @@ use crate::config::LayoutConfig;
 use crate::ir::{DiagramKind, Graph};
 use crate::theme::Theme;
 
+use super::super::label_placement;
 use super::super::ranking::{compute_ranks_subset, order_rank_nodes, rank_edges_for_manual_layout};
 use super::super::{NodeLayout, TextBlock, is_horizontal};
 use super::analysis::FlowchartRelationshipAnalysis;
@@ -13,6 +14,8 @@ const LABEL_RANK_FONT_SCALE: f32 = 0.5;
 const LABEL_RANK_MIN_GAP: f32 = 8.0;
 const EDGE_AWARE_CENTER_PULL_LIMIT_RATIO: f32 = 0.28;
 const EDGE_AWARE_CENTER_PULL_BLEND: f32 = 0.35;
+const FLOWCHART_LABEL_MAIN_GAP_PAD_RATIO: f32 = 0.35;
+const FLOWCHART_LABEL_MAIN_GAP_MAX_SCALE: f32 = 3.0;
 
 fn median_center(values: &mut [f32]) -> Option<f32> {
     if values.is_empty() {
@@ -85,6 +88,71 @@ fn node_cross_spacing_half(
             .and_then(|analysis| analysis.node_relation(node_id))
             .map(|relation| relation.extra_cross_padding(config))
             .unwrap_or(0.0)
+}
+
+fn flowchart_label_main_gap_budgets(
+    graph: &Graph,
+    layout_edges: &[crate::ir::Edge],
+    edge_labels: &[Option<TextBlock>],
+    shifted_ranks: &HashMap<String, usize>,
+    config: &LayoutConfig,
+) -> HashMap<usize, f32> {
+    if graph.kind != DiagramKind::Flowchart {
+        return HashMap::new();
+    }
+
+    let horizontal = is_horizontal(graph.direction);
+    let (label_pad_x, label_pad_y) = label_placement::edge_label_padding(graph.kind, config);
+    let mut gap_budgets: HashMap<usize, f32> = HashMap::new();
+    let mut label_counts: HashMap<usize, usize> = HashMap::new();
+
+    for (idx, edge) in layout_edges.iter().enumerate() {
+        let Some(label) = edge_labels.get(idx).and_then(|label| label.as_ref()) else {
+            continue;
+        };
+        if label.width <= 0.0 || label.height <= 0.0 {
+            continue;
+        }
+        let Some(&from_rank) = shifted_ranks.get(&edge.from) else {
+            continue;
+        };
+        let Some(&to_rank) = shifted_ranks.get(&edge.to) else {
+            continue;
+        };
+        let lo = from_rank.min(to_rank);
+        let hi = from_rank.max(to_rank);
+        if hi <= lo {
+            continue;
+        }
+
+        let gap_after_rank = lo + (hi - lo - 1) / 2;
+        let label_main = if horizontal {
+            label.width + 2.0 * label_pad_x
+        } else {
+            label.height + 2.0 * label_pad_y
+        };
+        let label_cross = if horizontal {
+            label.height + 2.0 * label_pad_y
+        } else {
+            label.width + 2.0 * label_pad_x
+        };
+        let stack_index = label_counts.entry(gap_after_rank).or_insert(0);
+        let stacked_cross_allowance = *stack_index as f32 * label_cross * 0.35;
+        *stack_index += 1;
+
+        let desired_gap = (label_main
+            + config.node_spacing * FLOWCHART_LABEL_MAIN_GAP_PAD_RATIO
+            + stacked_cross_allowance)
+            .min(config.rank_spacing * FLOWCHART_LABEL_MAIN_GAP_MAX_SCALE)
+            .max(config.rank_spacing);
+        let extra = (desired_gap - config.rank_spacing).max(0.0);
+        gap_budgets
+            .entry(gap_after_rank)
+            .and_modify(|current| *current = current.max(extra))
+            .or_insert(extra);
+    }
+
+    gap_budgets
 }
 
 fn build_ordering_edges(
@@ -440,6 +508,13 @@ pub(in crate::layout) fn assign_positions_manual(
         .iter()
         .map(|(id, &r)| (id.clone(), r + rank_shift[r]))
         .collect();
+    let flowchart_label_gap_budgets = flowchart_label_main_gap_budgets(
+        graph,
+        &layout_edges,
+        &edge_labels,
+        &shifted_ranks,
+        config,
+    );
 
     let ordering_edges = build_ordering_edges(
         &layout_edges,
@@ -480,7 +555,10 @@ pub(in crate::layout) fn assign_positions_manual(
                 (theme.font_size * LABEL_RANK_FONT_SCALE).max(LABEL_RANK_MIN_GAP)
             } else {
                 config.rank_spacing
-            };
+            } + flowchart_label_gap_budgets
+                .get(&rank_idx)
+                .copied()
+                .unwrap_or(0.0);
             main_cursor += max_main + gap;
         }
     }
@@ -805,6 +883,53 @@ mod tests {
         let dummy_id = label_dummy_ids[1].as_ref().expect("label dummy id");
         let dummy = nodes.get(dummy_id).expect("dummy node present");
         assert!(dummy.hidden);
+    }
+
+    #[test]
+    fn flowchart_center_labels_expand_main_rank_gap_before_routing() {
+        let mut graph = Graph::new();
+        graph.kind = DiagramKind::Flowchart;
+        graph.direction = crate::ir::Direction::LeftRight;
+        for (idx, id) in ["A", "B"].iter().enumerate() {
+            graph.nodes.insert((*id).to_string(), make_graph_node(id));
+            graph.node_order.insert((*id).to_string(), idx);
+        }
+        let edges = vec![make_edge("A", "B", Some("long label"))];
+
+        let layout_node_ids = vec!["A".to_string(), "B".to_string()];
+        let layout_set: HashSet<String> = layout_node_ids.iter().cloned().collect();
+        let mut nodes = BTreeMap::new();
+        for id in &layout_node_ids {
+            nodes.insert(id.clone(), make_node_layout(id));
+        }
+        let pre_measured_labels = vec![Some(TextBlock {
+            lines: vec!["long label".to_string()],
+            width: 180.0,
+            height: 20.0,
+        })];
+        let mut label_dummy_ids = vec![None; edges.len()];
+        let config = LayoutConfig::default();
+
+        assign_positions_manual(
+            &graph,
+            &layout_node_ids,
+            &layout_set,
+            &mut nodes,
+            &config,
+            &edges,
+            &Theme::modern(),
+            &pre_measured_labels,
+            &mut label_dummy_ids,
+        );
+
+        let a = nodes.get("A").expect("A layout");
+        let b = nodes.get("B").expect("B layout");
+        let gap = b.x - (a.x + a.width);
+        assert_eq!(label_dummy_ids[0], None);
+        assert!(
+            gap > config.rank_spacing + 40.0,
+            "flowchart label should reserve main-axis space before routing, gap={gap}"
+        );
     }
 
     #[test]
