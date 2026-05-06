@@ -19,7 +19,7 @@ use super::super::routing::{
 };
 use super::super::{
     FLOWCHART_PORT_ROUTE_BIAS_MAX_RATIO, FLOWCHART_PORT_ROUTE_BIAS_RATIO, MULTI_EDGE_OFFSET_RATIO,
-    NodeLayout, SubgraphLayout, TextBlock, anchor_layout_for_edge,
+    NodeLayout, SubgraphLayout, TextBlock, anchor_layout_for_edge_towards,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -159,14 +159,26 @@ impl FlowchartLayoutPlan {
                 continue;
             };
             let temp_from = from_layout.anchor_subgraph.and_then(|anchor_idx| {
-                subgraphs
-                    .get(anchor_idx)
-                    .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
+                subgraphs.get(anchor_idx).map(|sub| {
+                    anchor_layout_for_edge_towards(
+                        from_layout,
+                        sub,
+                        to_layout,
+                        graph.direction,
+                        true,
+                    )
+                })
             });
             let temp_to = to_layout.anchor_subgraph.and_then(|anchor_idx| {
-                subgraphs
-                    .get(anchor_idx)
-                    .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
+                subgraphs.get(anchor_idx).map(|sub| {
+                    anchor_layout_for_edge_towards(
+                        to_layout,
+                        sub,
+                        from_layout,
+                        graph.direction,
+                        false,
+                    )
+                })
             });
             let from = temp_from.as_ref().unwrap_or(from_layout);
             let to = temp_to.as_ref().unwrap_or(to_layout);
@@ -293,14 +305,26 @@ pub(super) fn plan_edge_lanes(
                 continue;
             };
             let temp_from = from_layout.anchor_subgraph.and_then(|anchor_idx| {
-                subgraphs
-                    .get(anchor_idx)
-                    .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
+                subgraphs.get(anchor_idx).map(|sub| {
+                    anchor_layout_for_edge_towards(
+                        from_layout,
+                        sub,
+                        to_layout,
+                        graph.direction,
+                        true,
+                    )
+                })
             });
             let temp_to = to_layout.anchor_subgraph.and_then(|anchor_idx| {
-                subgraphs
-                    .get(anchor_idx)
-                    .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
+                subgraphs.get(anchor_idx).map(|sub| {
+                    anchor_layout_for_edge_towards(
+                        to_layout,
+                        sub,
+                        from_layout,
+                        graph.direction,
+                        false,
+                    )
+                })
             });
             let from = temp_from.as_ref().unwrap_or(from_layout);
             let to = temp_to.as_ref().unwrap_or(to_layout);

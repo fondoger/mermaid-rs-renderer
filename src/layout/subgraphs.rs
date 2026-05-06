@@ -5,6 +5,7 @@ use crate::config::LayoutConfig;
 use crate::ir::{DiagramKind, Direction, Graph};
 use crate::theme::Theme;
 
+use super::geometry::EdgeSide;
 use super::ranking::compute_ranks_subset;
 use super::routing::is_horizontal;
 use super::text::measure_label;
@@ -1251,6 +1252,80 @@ pub(super) fn anchor_layout_for_edge(
     node
 }
 
+pub(super) fn anchor_layout_for_edge_towards(
+    anchor: &NodeLayout,
+    subgraph: &SubgraphLayout,
+    remote: &NodeLayout,
+    direction: Direction,
+    is_from: bool,
+) -> NodeLayout {
+    let remote_center = (
+        remote.x + remote.width * 0.5,
+        remote.y + remote.height * 0.5,
+    );
+    let inside_x = remote_center.0 >= subgraph.x && remote_center.0 <= subgraph.x + subgraph.width;
+    let inside_y = remote_center.1 >= subgraph.y && remote_center.1 <= subgraph.y + subgraph.height;
+    if inside_x && inside_y {
+        return anchor_layout_for_edge(anchor, subgraph, direction, is_from);
+    }
+
+    let size = 2.0;
+    let min_x = subgraph.x;
+    let max_x = subgraph.x + subgraph.width;
+    let min_y = subgraph.y;
+    let max_y = subgraph.y + subgraph.height;
+    let pad = (subgraph.width.min(subgraph.height) * 0.08).clamp(0.0, 18.0);
+    let clamp_x = |x: f32| x.clamp(min_x + pad, max_x - pad);
+    let clamp_y = |y: f32| y.clamp(min_y + pad, max_y - pad);
+    let preferred_side = match (is_horizontal(direction), is_from) {
+        (true, true) => EdgeSide::Right,
+        (true, false) => EdgeSide::Left,
+        (false, true) => EdgeSide::Bottom,
+        (false, false) => EdgeSide::Top,
+    };
+
+    let candidates = [
+        (EdgeSide::Left, (min_x, clamp_y(remote_center.1))),
+        (EdgeSide::Right, (max_x, clamp_y(remote_center.1))),
+        (EdgeSide::Top, (clamp_x(remote_center.0), min_y)),
+        (EdgeSide::Bottom, (clamp_x(remote_center.0), max_y)),
+    ];
+    let mut best = candidates[0];
+    let mut best_score = f32::INFINITY;
+    for (side, point) in candidates {
+        let manhattan = (point.0 - remote_center.0).abs() + (point.1 - remote_center.1).abs();
+        let tie_bias = if side == preferred_side { -0.01 } else { 0.0 };
+        let score = manhattan + tie_bias;
+        if score < best_score {
+            best = (side, point);
+            best_score = score;
+        }
+    }
+
+    let mut node = anchor.clone();
+    node.width = size;
+    node.height = size;
+    match best.0 {
+        EdgeSide::Left => {
+            node.x = min_x;
+            node.y = best.1.1 - size * 0.5;
+        }
+        EdgeSide::Right => {
+            node.x = max_x - size;
+            node.y = best.1.1 - size * 0.5;
+        }
+        EdgeSide::Top => {
+            node.x = best.1.0 - size * 0.5;
+            node.y = min_y;
+        }
+        EdgeSide::Bottom => {
+            node.x = best.1.0 - size * 0.5;
+            node.y = max_y - size;
+        }
+    }
+    node
+}
+
 fn mirror_subgraph_nodes(
     node_ids: &[String],
     nodes: &mut BTreeMap<String, NodeLayout>,
@@ -1595,6 +1670,48 @@ mod tests {
         let td_to = anchor_layout_for_edge(&anchor, &subgraph, Direction::TopDown, false);
         assert!((td_to.x - 59.0).abs() < 1e-3);
         assert!((td_to.y - 20.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn anchor_layout_for_edge_towards_uses_nearest_boundary_port() {
+        let anchor = make_node("anchor", 0.0, 0.0, 10.0, 10.0);
+        let subgraph = SubgraphLayout {
+            label: "Cluster".to_string(),
+            label_block: TextBlock {
+                lines: vec!["Cluster".to_string()],
+                width: 40.0,
+                height: 12.0,
+            },
+            nodes: vec!["A".to_string(), "B".to_string()],
+            x: 10.0,
+            y: 20.0,
+            width: 100.0,
+            height: 60.0,
+            style: crate::ir::NodeStyle::default(),
+            icon: None,
+        };
+        let remote_left = make_node("remote", -80.0, 45.0, 20.0, 20.0);
+        let remote_bottom = make_node("remote", 58.0, 140.0, 20.0, 20.0);
+
+        let left = anchor_layout_for_edge_towards(
+            &anchor,
+            &subgraph,
+            &remote_left,
+            Direction::LeftRight,
+            true,
+        );
+        assert!((left.x - 10.0).abs() < 1e-3);
+        assert!((left.y + left.height * 0.5 - 55.0).abs() < 1.0);
+
+        let bottom = anchor_layout_for_edge_towards(
+            &anchor,
+            &subgraph,
+            &remote_bottom,
+            Direction::LeftRight,
+            false,
+        );
+        assert!((bottom.y + bottom.height - 80.0).abs() < 1e-3);
+        assert!((bottom.x + bottom.width * 0.5 - 68.0).abs() < 1.0);
     }
 
     #[test]

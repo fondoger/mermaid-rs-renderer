@@ -11,7 +11,7 @@ use super::super::routing::*;
 use super::super::{
     EDGE_OCCUPANCY_CELL_RATIO, EdgeLayout, FLOWCHART_EDGE_LABEL_WRAP_TRIGGER_CHARS,
     LayoutStageMetrics, MIN_NODE_SPACING_FLOOR, MULTI_EDGE_OFFSET_RATIO, NodeLayout,
-    SubgraphLayout, TextBlock, anchor_layout_for_edge,
+    SubgraphLayout, TextBlock, anchor_layout_for_edge_towards,
 };
 use super::path_cleanup;
 use super::plan;
@@ -457,29 +457,17 @@ fn repair_flowchart_endpoint_reentries_by_rerouting(
             continue;
         }
 
-        let (Some(from_layout), Some(to_layout)) = (nodes.get(&edge.from), nodes.get(&edge.to))
+        let Some((from, to)) = effective_edge_endpoint_layouts(graph, nodes, subgraphs, edge)
         else {
             continue;
         };
-        let temp_from = from_layout.anchor_subgraph.and_then(|anchor_idx| {
-            subgraphs
-                .get(anchor_idx)
-                .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
-        });
-        let temp_to = to_layout.anchor_subgraph.and_then(|anchor_idx| {
-            subgraphs
-                .get(anchor_idx)
-                .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
-        });
-        let from = temp_from.as_ref().unwrap_or(from_layout);
-        let to = temp_to.as_ref().unwrap_or(to_layout);
         let current_port = edge_ports.get(idx).copied().unwrap_or(EdgePortInfo {
             start_side: EdgeSide::Right,
             end_side: EdgeSide::Left,
             start_offset: 0.0,
             end_offset: 0.0,
         });
-        let stub_len = port_stub_length(config, from, to);
+        let stub_len = port_stub_length(config, &from, &to);
         let mut best_score = baseline_score;
         let mut best_points: Option<Vec<(f32, f32)>> = None;
         let mut best_port = current_port;
@@ -503,8 +491,8 @@ fn repair_flowchart_endpoint_reentries_by_rerouting(
                 let route_ctx = RouteContext {
                     from_id: &edge.from,
                     to_id: &edge.to,
-                    from,
-                    to,
+                    from: &from,
+                    to: &to,
                     direction: graph.direction,
                     config,
                     obstacles,
@@ -1011,17 +999,17 @@ fn effective_edge_endpoint_layouts(
     let from = from_layout
         .anchor_subgraph
         .and_then(|anchor_idx| {
-            subgraphs
-                .get(anchor_idx)
-                .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
+            subgraphs.get(anchor_idx).map(|sub| {
+                anchor_layout_for_edge_towards(from_layout, sub, to_layout, graph.direction, true)
+            })
         })
         .unwrap_or_else(|| from_layout.clone());
     let to = to_layout
         .anchor_subgraph
         .and_then(|anchor_idx| {
-            subgraphs
-                .get(anchor_idx)
-                .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
+            subgraphs.get(anchor_idx).map(|sub| {
+                anchor_layout_for_edge_towards(to_layout, sub, from_layout, graph.direction, false)
+            })
         })
         .unwrap_or_else(|| to_layout.clone());
     Some((from, to))
@@ -2098,34 +2086,22 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
     let mut port_candidates: HashMap<(String, PortTrack), Vec<PortCandidate>> = HashMap::new();
     let mut side_choice_segments: Vec<Segment> = Vec::with_capacity(graph.edges.len());
     for (idx, edge) in graph.edges.iter().enumerate() {
-        let (Some(from_layout), Some(to_layout)) = (nodes.get(&edge.from), nodes.get(&edge.to))
+        let Some((from, to)) = effective_edge_endpoint_layouts(graph, nodes, subgraphs, edge)
         else {
             continue;
         };
-        let temp_from = from_layout.anchor_subgraph.and_then(|anchor_idx| {
-            subgraphs
-                .get(anchor_idx)
-                .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
-        });
-        let temp_to = to_layout.anchor_subgraph.and_then(|anchor_idx| {
-            subgraphs
-                .get(anchor_idx)
-                .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
-        });
-        let from = temp_from.as_ref().unwrap_or(from_layout);
-        let to = temp_to.as_ref().unwrap_or(to_layout);
         let use_balanced_sides = !matches!(graph.kind, DiagramKind::Architecture);
         let from_degree = node_degrees.get(&edge.from).copied().unwrap_or(0);
         let to_degree = node_degrees.get(&edge.to).copied().unwrap_or(0);
         let edge_role = edge_roles.get(idx).copied().unwrap_or_default();
         let allow_low_degree_balancing =
             allow_low_degree_balancing_for_edge(edge, edge_role, from_degree, to_degree);
-        let primary_sides = edge_sides(from, to, graph.direction);
+        let primary_sides = edge_sides(&from, &to, graph.direction);
         let balanced = edge_sides_balanced(
             &edge.from,
             &edge.to,
-            from,
-            to,
+            &from,
+            &to,
             allow_low_degree_balancing,
             edge_role.is_back_edge,
             graph.direction,
@@ -2139,8 +2115,8 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
             choose_routed_flowchart_sides(
                 &edge.from,
                 &edge.to,
-                from,
-                to,
+                &from,
+                &to,
                 primary_sides,
                 balanced,
                 edge_role,
@@ -2157,7 +2133,7 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
             )
         } else if use_balanced_sides {
             if edge_role.is_back_edge {
-                choose_outer_back_edge_sides(from, to, graph.direction, content_bounds, balanced)
+                choose_outer_back_edge_sides(&from, &to, graph.direction, content_bounds, balanced)
             } else {
                 balanced
             }
@@ -2169,12 +2145,12 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
             && (selected_sides.0 != primary_sides.0 || selected_sides.1 != primary_sides.1)
         {
             let candidate_points = [
-                anchor_point_for_node(from, selected_sides.0, 0.0),
-                anchor_point_for_node(to, selected_sides.1, 0.0),
+                anchor_point_for_node(&from, selected_sides.0, 0.0),
+                anchor_point_for_node(&to, selected_sides.1, 0.0),
             ];
             let primary_points = [
-                anchor_point_for_node(from, primary_sides.0, 0.0),
-                anchor_point_for_node(to, primary_sides.1, 0.0),
+                anchor_point_for_node(&from, primary_sides.0, 0.0),
+                anchor_point_for_node(&to, primary_sides.1, 0.0),
             ];
             let (candidate_crossings, _) =
                 edge_crossings_with_existing(&candidate_points, &side_choice_segments);
@@ -2195,8 +2171,8 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
         };
         selected_edge_sides[idx] = (start_side, end_side);
 
-        let from_anchor = anchor_point_for_node(from, start_side, 0.0);
-        let to_anchor = anchor_point_for_node(to, end_side, 0.0);
+        let from_anchor = anchor_point_for_node(&from, start_side, 0.0);
+        let to_anchor = anchor_point_for_node(&to, end_side, 0.0);
         side_choice_segments.push((from_anchor, to_anchor));
     }
     let mut node_side_counts: HashMap<String, [usize; 4]> = HashMap::new();
@@ -2206,33 +2182,21 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
         bump_side_load(&mut node_side_counts, &edge.to, end_side);
     }
     for (idx, edge) in graph.edges.iter().enumerate() {
-        let (Some(from_layout), Some(to_layout)) = (nodes.get(&edge.from), nodes.get(&edge.to))
+        let Some((from, to)) = effective_edge_endpoint_layouts(graph, nodes, subgraphs, edge)
         else {
             continue;
         };
-        let temp_from = from_layout.anchor_subgraph.and_then(|anchor_idx| {
-            subgraphs
-                .get(anchor_idx)
-                .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
-        });
-        let temp_to = to_layout.anchor_subgraph.and_then(|anchor_idx| {
-            subgraphs
-                .get(anchor_idx)
-                .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
-        });
-        let from = temp_from.as_ref().unwrap_or(from_layout);
-        let to = temp_to.as_ref().unwrap_or(to_layout);
         let from_degree = node_degrees.get(&edge.from).copied().unwrap_or(0);
         let to_degree = node_degrees.get(&edge.to).copied().unwrap_or(0);
         let (start_side, end_side) = selected_edge_sides[idx];
         let start_counts = node_side_counts.get(&edge.from).copied().unwrap_or([0; 4]);
         let end_counts = node_side_counts.get(&edge.to).copied().unwrap_or([0; 4]);
-        let from_anchor = anchor_point_for_node(from, start_side, 0.0);
-        let to_anchor = anchor_point_for_node(to, end_side, 0.0);
-        let start_other = ideal_port_pos((to_anchor.0, to_anchor.1), from, start_side);
-        let end_other = ideal_port_pos((from_anchor.0, from_anchor.1), to, end_side);
-        let start_track = port_track_for_assignment(from, start_side, from_degree, start_counts);
-        let end_track = port_track_for_assignment(to, end_side, to_degree, end_counts);
+        let from_anchor = anchor_point_for_node(&from, start_side, 0.0);
+        let to_anchor = anchor_point_for_node(&to, end_side, 0.0);
+        let start_other = ideal_port_pos((to_anchor.0, to_anchor.1), &from, start_side);
+        let end_other = ideal_port_pos((from_anchor.0, from_anchor.1), &to, end_side);
+        let start_track = port_track_for_assignment(&from, start_side, from_degree, start_counts);
+        let end_track = port_track_for_assignment(&to, end_side, to_degree, end_counts);
         port_candidates
             .entry((edge.from.clone(), start_track))
             .or_default()
@@ -2416,22 +2380,10 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
         && graph.edges.len() >= 18
         && graph.edges.len() * 2 >= layout_node_count * 3;
     for (idx, edge) in graph.edges.iter().enumerate() {
-        let (Some(from_layout), Some(to_layout)) = (nodes.get(&edge.from), nodes.get(&edge.to))
+        let Some((from, to)) = effective_edge_endpoint_layouts(graph, nodes, subgraphs, edge)
         else {
             continue;
         };
-        let temp_from = from_layout.anchor_subgraph.and_then(|idx| {
-            subgraphs
-                .get(idx)
-                .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
-        });
-        let temp_to = to_layout.anchor_subgraph.and_then(|idx| {
-            subgraphs
-                .get(idx)
-                .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
-        });
-        let from = temp_from.as_ref().unwrap_or(from_layout);
-        let to = temp_to.as_ref().unwrap_or(to_layout);
         let from_center = (from.x + from.width / 2.0, from.y + from.height / 2.0);
         let to_center = (to.x + to.width / 2.0, to.y + to.height / 2.0);
         let dx = to_center.0 - from_center.0;
@@ -2446,7 +2398,7 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
         } else {
             dy.abs()
         };
-        let (_, _, is_backward) = edge_sides(from, to, graph.direction);
+        let (_, _, is_backward) = edge_sides(&from, &to, graph.direction);
         let is_dotted = edge.style == crate::ir::EdgeStyle::Dotted;
         let has_label = edge.label.is_some();
         let is_secondary = is_dotted || has_label;
@@ -2556,29 +2508,17 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
         } else {
             cross_edge_offsets[*idx]
         };
-        let (Some(from_layout), Some(to_layout)) = (nodes.get(&edge.from), nodes.get(&edge.to))
+        let Some((from, to)) = effective_edge_endpoint_layouts(graph, nodes, subgraphs, edge)
         else {
             continue;
         };
-        let temp_from = from_layout.anchor_subgraph.and_then(|idx| {
-            subgraphs
-                .get(idx)
-                .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
-        });
-        let temp_to = to_layout.anchor_subgraph.and_then(|idx| {
-            subgraphs
-                .get(idx)
-                .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
-        });
-        let from = temp_from.as_ref().unwrap_or(from_layout);
-        let to = temp_to.as_ref().unwrap_or(to_layout);
         let port_info = edge_ports.get(*idx).copied().unwrap_or(EdgePortInfo {
             start_side: EdgeSide::Right,
             end_side: EdgeSide::Left,
             start_offset: 0.0,
             end_offset: 0.0,
         });
-        let default_stub = port_stub_length(config, from, to);
+        let default_stub = port_stub_length(config, &from, &to);
         let stub_len = match graph.kind {
             DiagramKind::Class | DiagramKind::Er | DiagramKind::Requirement => 0.0,
             _ => default_stub,
@@ -2626,8 +2566,8 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
         let route_ctx = RouteContext {
             from_id: &edge.from,
             to_id: &edge.to,
-            from,
-            to,
+            from: &from,
+            to: &to,
             direction: graph.direction,
             config,
             obstacles: &obstacles,

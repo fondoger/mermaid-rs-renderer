@@ -9,7 +9,7 @@ use super::super::routing::{
     insert_label_via_point, is_horizontal, path_length, path_point_at_progress,
     segment_intersects_rect,
 };
-use super::super::{NodeLayout, SubgraphLayout, TextBlock, anchor_layout_for_edge};
+use super::super::{NodeLayout, SubgraphLayout, TextBlock, anchor_layout_for_edge_towards};
 
 #[derive(Clone)]
 pub(super) struct RouteLabelPlan {
@@ -148,14 +148,14 @@ fn provisional_route_label_center(
         return None;
     };
     let temp_from = from_layout.anchor_subgraph.and_then(|anchor_idx| {
-        ctx.subgraphs
-            .get(anchor_idx)
-            .map(|sub| anchor_layout_for_edge(from_layout, sub, graph.direction, true))
+        ctx.subgraphs.get(anchor_idx).map(|sub| {
+            anchor_layout_for_edge_towards(from_layout, sub, to_layout, graph.direction, true)
+        })
     });
     let temp_to = to_layout.anchor_subgraph.and_then(|anchor_idx| {
-        ctx.subgraphs
-            .get(anchor_idx)
-            .map(|sub| anchor_layout_for_edge(to_layout, sub, graph.direction, false))
+        ctx.subgraphs.get(anchor_idx).map(|sub| {
+            anchor_layout_for_edge_towards(to_layout, sub, from_layout, graph.direction, false)
+        })
     });
     let from = temp_from.as_ref().unwrap_or(from_layout);
     let to = temp_to.as_ref().unwrap_or(to_layout);
