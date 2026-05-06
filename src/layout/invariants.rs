@@ -3,7 +3,7 @@ use std::fmt;
 
 use crate::ir::DiagramKind;
 
-use super::{C4TextLayout, DiagramData, Layout, TextBlock};
+use super::{C4TextLayout, DiagramData, Layout, NodeLayout, TextBlock};
 
 const EPS: f32 = 0.1;
 const FLOWCHART_LABEL_ROUTE_CLEARANCE: f32 = 0.0;
@@ -14,6 +14,125 @@ const SEQUENCE_LABEL_LIFELINE_PAD_Y: f32 = 2.0;
 pub struct LayoutInvariantError {
     pub path: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct FlowchartQualityMetrics {
+    pub edge_count: usize,
+    pub bad_source_exits: usize,
+    pub bad_target_entries: usize,
+    pub endpoint_node_intrusions: usize,
+    pub endpoint_node_reentries: usize,
+    pub non_endpoint_node_hits: usize,
+    pub crossings: usize,
+    pub bends: usize,
+    pub path_length: f32,
+    pub center_manhattan: f32,
+    pub path_to_center_manhattan_ratio: f32,
+    pub quality_score: f32,
+}
+
+impl FlowchartQualityMetrics {
+    /// Violations that should be treated as non-negotiable once repair/fallback
+    /// stages are wired in. `endpoint_node_reentries` is exposed separately so
+    /// existing dogleg debt can be tracked without breaking all fixtures at once.
+    pub fn hard_violation_count(&self) -> usize {
+        self.bad_source_exits
+            + self.bad_target_entries
+            + self.endpoint_node_intrusions
+            + self.non_endpoint_node_hits
+    }
+
+    pub fn geometry_debt_count(&self) -> usize {
+        self.hard_violation_count() + self.endpoint_node_reentries
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EndpointSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// Compute a numeric quality report for flowcharts.
+///
+/// This is deliberately separate from `validate_layout_invariants`: validation is
+/// a compatibility gate for today's renderer, while this score is the contract we
+/// can ratchet down as route repair improves.
+pub fn flowchart_quality_metrics(layout: &Layout) -> Option<FlowchartQualityMetrics> {
+    if layout.kind != DiagramKind::Flowchart {
+        return None;
+    }
+
+    let mut metrics = FlowchartQualityMetrics::default();
+    metrics.edge_count = layout.edges.len();
+
+    for edge in &layout.edges {
+        if edge.points.len() < 2 {
+            metrics.bad_source_exits += 1;
+            metrics.bad_target_entries += 1;
+            continue;
+        }
+        let Some(from) = layout.nodes.get(&edge.from) else {
+            continue;
+        };
+        let Some(to) = layout.nodes.get(&edge.to) else {
+            continue;
+        };
+
+        let start = edge.points[0];
+        let end = *edge.points.last().unwrap();
+        let next = edge.points[1];
+        let prev = edge.points[edge.points.len() - 2];
+        let start_side = endpoint_side_for_point(from, start);
+        let end_side = endpoint_side_for_point(to, end);
+
+        if !source_exits_outward(start_side, start, next) {
+            metrics.bad_source_exits += 1;
+        }
+        if !target_enters_from_outside(end_side, prev, end) {
+            metrics.bad_target_entries += 1;
+        }
+        if segment_intrudes_endpoint_rect(start_side, next, start, from) {
+            metrics.endpoint_node_intrusions += 1;
+        }
+        if segment_intrudes_endpoint_rect(end_side, prev, end, to) {
+            metrics.endpoint_node_intrusions += 1;
+        }
+        metrics.endpoint_node_reentries += endpoint_reentry_count(&edge.points, from, true);
+        metrics.endpoint_node_reentries += endpoint_reentry_count(&edge.points, to, false);
+
+        for (node_id, node) in &layout.nodes {
+            if node_id == &edge.from
+                || node_id == &edge.to
+                || node.hidden
+                || node.anchor_subgraph.is_some()
+            {
+                continue;
+            }
+            if edge
+                .points
+                .windows(2)
+                .any(|segment| segment_hits_node_shape_interior(segment[0], segment[1], node))
+            {
+                metrics.non_endpoint_node_hits += 1;
+            }
+        }
+
+        metrics.bends += path_bend_count(&edge.points);
+        metrics.path_length += path_length(&edge.points);
+        let from_c = node_center(from);
+        let to_c = node_center(to);
+        metrics.center_manhattan += (to_c.0 - from_c.0).abs() + (to_c.1 - from_c.1).abs();
+    }
+
+    metrics.crossings = edge_crossing_count(layout);
+    metrics.path_to_center_manhattan_ratio =
+        metrics.path_length / metrics.center_manhattan.max(1.0);
+    metrics.quality_score = flowchart_quality_score(&metrics);
+    Some(metrics)
 }
 
 impl LayoutInvariantError {
@@ -750,6 +869,167 @@ fn validate_sequence_invariants(layout: &Layout, errors: &mut Vec<LayoutInvarian
     }
 }
 
+fn flowchart_quality_score(metrics: &FlowchartQualityMetrics) -> f32 {
+    metrics.bad_source_exits as f32 * 10_000.0
+        + metrics.bad_target_entries as f32 * 10_000.0
+        + metrics.endpoint_node_intrusions as f32 * 8_000.0
+        + metrics.non_endpoint_node_hits as f32 * 20_000.0
+        + metrics.endpoint_node_reentries as f32 * 400.0
+        + metrics.crossings as f32 * 120.0
+        + metrics.bends as f32 * 3.0
+        + metrics.path_to_center_manhattan_ratio * 40.0
+}
+
+fn node_center(node: &NodeLayout) -> (f32, f32) {
+    (node.x + node.width * 0.5, node.y + node.height * 0.5)
+}
+
+fn endpoint_side_for_point(node: &NodeLayout, point: (f32, f32)) -> EndpointSide {
+    let left = (point.0 - node.x).abs();
+    let right = (point.0 - (node.x + node.width)).abs();
+    let top = (point.1 - node.y).abs();
+    let bottom = (point.1 - (node.y + node.height)).abs();
+    let mut best = (left, EndpointSide::Left);
+    for candidate in [
+        (right, EndpointSide::Right),
+        (top, EndpointSide::Top),
+        (bottom, EndpointSide::Bottom),
+    ] {
+        if candidate.0 < best.0 {
+            best = candidate;
+        }
+    }
+    best.1
+}
+
+fn source_exits_outward(side: EndpointSide, start: (f32, f32), next: (f32, f32)) -> bool {
+    let eps = 0.5;
+    match side {
+        EndpointSide::Left => next.0 <= start.0 + eps,
+        EndpointSide::Right => next.0 >= start.0 - eps,
+        EndpointSide::Top => next.1 <= start.1 + eps,
+        EndpointSide::Bottom => next.1 >= start.1 - eps,
+    }
+}
+
+fn target_enters_from_outside(side: EndpointSide, prev: (f32, f32), end: (f32, f32)) -> bool {
+    let eps = 0.5;
+    match side {
+        EndpointSide::Left => prev.0 <= end.0 + eps,
+        EndpointSide::Right => prev.0 >= end.0 - eps,
+        EndpointSide::Top => prev.1 <= end.1 + eps,
+        EndpointSide::Bottom => prev.1 >= end.1 - eps,
+    }
+}
+
+fn segment_intrudes_endpoint_rect(
+    side: EndpointSide,
+    outside: (f32, f32),
+    endpoint: (f32, f32),
+    node: &NodeLayout,
+) -> bool {
+    let eps = 0.5;
+    let within_y = endpoint.1 >= node.y - eps && endpoint.1 <= node.y + node.height + eps;
+    let within_x = endpoint.0 >= node.x - eps && endpoint.0 <= node.x + node.width + eps;
+    match side {
+        EndpointSide::Left => within_y && outside.0 > endpoint.0 + eps,
+        EndpointSide::Right => within_y && outside.0 < endpoint.0 - eps,
+        EndpointSide::Top => within_x && outside.1 > endpoint.1 + eps,
+        EndpointSide::Bottom => within_x && outside.1 < endpoint.1 - eps,
+    }
+}
+
+fn point_inside_node_shape_strict(node: &NodeLayout, point: (f32, f32)) -> bool {
+    let eps = 0.5;
+    match node.shape {
+        crate::ir::NodeShape::Diamond => {
+            let (cx, cy) = node_center(node);
+            let rx = (node.width * 0.5 - eps).max(1.0);
+            let ry = (node.height * 0.5 - eps).max(1.0);
+            (point.0 - cx).abs() / rx + (point.1 - cy).abs() / ry < 1.0
+        }
+        crate::ir::NodeShape::Circle | crate::ir::NodeShape::DoubleCircle => {
+            let (cx, cy) = node_center(node);
+            let rx = (node.width * 0.5 - eps).max(1.0);
+            let ry = (node.height * 0.5 - eps).max(1.0);
+            let nx = (point.0 - cx) / rx;
+            let ny = (point.1 - cy) / ry;
+            nx * nx + ny * ny < 1.0
+        }
+        _ => {
+            point.0 > node.x + eps
+                && point.0 < node.x + node.width - eps
+                && point.1 > node.y + eps
+                && point.1 < node.y + node.height - eps
+        }
+    }
+}
+
+fn segment_hits_node_shape_interior(a: (f32, f32), b: (f32, f32), node: &NodeLayout) -> bool {
+    let steps = (((b.0 - a.0).hypot(b.1 - a.1) / 4.0).ceil() as usize).max(1);
+    (1..steps).any(|i| {
+        let t = i as f32 / steps as f32;
+        point_inside_node_shape_strict(node, (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t))
+    })
+}
+
+fn endpoint_reentry_count(points: &[(f32, f32)], node: &NodeLayout, is_source: bool) -> usize {
+    if points.len() < 3 {
+        return 0;
+    }
+    let last_segment_idx = points.len().saturating_sub(2);
+    points
+        .windows(2)
+        .enumerate()
+        .filter(|(idx, segment)| {
+            let allowed_endpoint_stub = if is_source {
+                *idx == 0
+            } else {
+                *idx == last_segment_idx
+            };
+            !allowed_endpoint_stub && segment_hits_node_shape_interior(segment[0], segment[1], node)
+        })
+        .count()
+}
+
+fn path_length(points: &[(f32, f32)]) -> f32 {
+    points
+        .windows(2)
+        .map(|segment| (segment[1].0 - segment[0].0).hypot(segment[1].1 - segment[0].1))
+        .sum()
+}
+
+fn path_bend_count(points: &[(f32, f32)]) -> usize {
+    points
+        .windows(3)
+        .filter(|triple| {
+            let a = (triple[1].0 - triple[0].0, triple[1].1 - triple[0].1);
+            let b = (triple[2].0 - triple[1].0, triple[2].1 - triple[1].1);
+            (a.0 * b.1 - a.1 * b.0).abs() > 1e-3
+        })
+        .count()
+}
+
+fn edge_crossing_count(layout: &Layout) -> usize {
+    let mut crossings = 0usize;
+    for (left_idx, left) in layout.edges.iter().enumerate() {
+        for right in layout.edges.iter().skip(left_idx + 1) {
+            for left_seg in left.points.windows(2) {
+                for right_seg in right.points.windows(2) {
+                    if segments_share_endpoint(left_seg[0], left_seg[1], right_seg[0], right_seg[1])
+                    {
+                        continue;
+                    }
+                    if segments_intersect(left_seg[0], left_seg[1], right_seg[0], right_seg[1]) {
+                        crossings += 1;
+                    }
+                }
+            }
+        }
+    }
+    crossings
+}
+
 fn check_rect(
     errors: &mut Vec<LayoutInvariantError>,
     path: &str,
@@ -951,4 +1231,45 @@ fn segment_intersects_rect(a: (f32, f32), b: (f32, f32), rect: (f32, f32, f32, f
     }
 
     true
+}
+
+fn points_near(a: (f32, f32), b: (f32, f32)) -> bool {
+    (a.0 - b.0).abs() <= 0.5 && (a.1 - b.1).abs() <= 0.5
+}
+
+fn segments_share_endpoint(a1: (f32, f32), a2: (f32, f32), b1: (f32, f32), b2: (f32, f32)) -> bool {
+    points_near(a1, b1) || points_near(a1, b2) || points_near(a2, b1) || points_near(a2, b2)
+}
+
+fn segments_intersect(a1: (f32, f32), a2: (f32, f32), b1: (f32, f32), b2: (f32, f32)) -> bool {
+    let o1 = orient(a1, a2, b1);
+    let o2 = orient(a1, a2, b2);
+    let o3 = orient(b1, b2, a1);
+    let o4 = orient(b1, b2, a2);
+
+    if o1.abs() <= f32::EPSILON && on_segment(a1, b1, a2) {
+        return true;
+    }
+    if o2.abs() <= f32::EPSILON && on_segment(a1, b2, a2) {
+        return true;
+    }
+    if o3.abs() <= f32::EPSILON && on_segment(b1, a1, b2) {
+        return true;
+    }
+    if o4.abs() <= f32::EPSILON && on_segment(b1, a2, b2) {
+        return true;
+    }
+
+    (o1 > 0.0) != (o2 > 0.0) && (o3 > 0.0) != (o4 > 0.0)
+}
+
+fn orient(a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> f32 {
+    (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+}
+
+fn on_segment(a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> bool {
+    b.0 >= a.0.min(c.0) - 0.5
+        && b.0 <= a.0.max(c.0) + 0.5
+        && b.1 >= a.1.min(c.1) - 0.5
+        && b.1 <= a.1.max(c.1) + 0.5
 }

@@ -29,7 +29,10 @@ use c4::*;
 use error::*;
 use gantt::*;
 use gitgraph::*;
-pub use invariants::{LayoutInvariantError, validate_layout_invariants};
+pub use invariants::{
+    FlowchartQualityMetrics, LayoutInvariantError, flowchart_quality_metrics,
+    validate_layout_invariants,
+};
 use journey::*;
 use kanban::*;
 use mindmap::*;

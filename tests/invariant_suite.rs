@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use mermaid_rs_renderer::ir::{BlockDiagram, QuadrantPoint};
 use mermaid_rs_renderer::layout::{
     DiagramData, EdgeLayout, Layout, QuadrantLayout, QuadrantPointLayout, TextBlock,
-    validate_layout_invariants,
+    flowchart_quality_metrics, validate_layout_invariants,
 };
 use mermaid_rs_renderer::{
     DiagramKind, EdgeStyle, Graph, LayoutConfig, Theme, compute_layout, parse_mermaid, render_svg,
@@ -158,6 +158,26 @@ fn invariants_reject_edges_with_fewer_than_two_points() {
             .any(|error| error.path.contains("edges[0:A->B].points")),
         "expected edge points error, got {errors:?}"
     );
+}
+
+#[test]
+fn flowchart_quality_metrics_report_hard_violations_and_score() {
+    let parsed = parse_mermaid("flowchart LR; A --> B").expect("parse failed");
+    let layout = compute_layout(&parsed.graph, &Theme::modern(), &LayoutConfig::default());
+    let metrics = flowchart_quality_metrics(&layout).expect("expected flowchart quality metrics");
+
+    assert_eq!(metrics.edge_count, 1);
+    assert_eq!(metrics.hard_violation_count(), 0);
+    assert!(metrics.path_length > 0.0);
+    assert!(metrics.quality_score.is_finite());
+}
+
+#[test]
+fn flowchart_quality_metrics_are_flowchart_only() {
+    let mut graph = Graph::new();
+    graph.kind = DiagramKind::Pie;
+    let layout = compute_layout(&graph, &Theme::modern(), &LayoutConfig::default());
+    assert!(flowchart_quality_metrics(&layout).is_none());
 }
 
 #[test]
