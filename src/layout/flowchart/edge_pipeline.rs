@@ -1421,7 +1421,7 @@ fn refine_flowchart_ports_with_route_candidates(
             ctx.node_degrees,
             ctx.side_loads,
         );
-        let side_candidates = collect_routed_side_candidates(
+        let mut side_candidates = collect_routed_side_candidates(
             &from,
             &to,
             primary,
@@ -1431,6 +1431,19 @@ fn refine_flowchart_ports_with_route_candidates(
             ctx.content_bounds,
             ctx.profile.max_candidates,
         );
+        // Back edges have their sides chosen deliberately so they exit into an
+        // outer routing lane instead of cutting back through the forward flow.
+        // Refinement here exists to tune the port *offset*, not to trade that
+        // outer lane for a shorter mid-diagram shortcut, so keep only the
+        // already-selected side pair for back edges.
+        if edge_role.is_back_edge {
+            side_candidates.retain(|(start_side, end_side, _)| {
+                *start_side == current.start_side && *end_side == current.end_side
+            });
+            if side_candidates.is_empty() {
+                side_candidates.push((current.start_side, current.end_side, true));
+            }
+        }
         let existing_segments = if ctx.profile.use_existing_segments {
             collect_port_choice_segments(ctx.graph, ctx.nodes, ctx.subgraphs, edge_ports, idx)
         } else {
