@@ -671,6 +671,13 @@ fn compute_flowchart_layout(
         push_non_members_out_of_subgraphs(graph, &mut nodes, theme, config);
     }
 
+    // State diagrams can leave a terminal/start pseudostate marker sitting on
+    // top of a real state when a cyclic predecessor and a tall composite
+    // sibling compress its rank. Nudge any visible marker clear of overlaps.
+    if graph.kind == crate::ir::DiagramKind::State {
+        separate_state_pseudostate_markers(graph, &mut nodes, config);
+    }
+
     let subgraphs = build_subgraph_layouts(graph, &nodes, theme, config);
     apply_subgraph_anchors(graph, &subgraphs, &mut nodes);
     #[cfg(debug_assertions)]
@@ -1078,6 +1085,69 @@ fn build_graph_node_layouts(
     nodes
 }
 
+/// Nudge visible state start/end pseudostate markers clear of any visible node
+/// they overlap. Cyclic predecessors next to tall composite states can compress
+/// a terminal marker's rank so it lands on top of a real state. This local
+/// pass moves only the small marker (never a real state), along the layout's
+/// main axis and away from the node it collides with, by the minimum needed.
+fn separate_state_pseudostate_markers(
+    graph: &Graph,
+    nodes: &mut BTreeMap<String, NodeLayout>,
+    config: &LayoutConfig,
+) {
+    let is_marker =
+        |id: &str| (id.starts_with("__start_") || id.starts_with("__end_")) && id.ends_with("__");
+
+    // Snapshot visible non-marker node rects to test against.
+    let obstacles: Vec<(f32, f32, f32, f32)> = nodes
+        .values()
+        .filter(|n| !n.hidden && !is_marker(&n.id))
+        .map(|n| (n.x, n.y, n.width, n.height))
+        .collect();
+    if obstacles.is_empty() {
+        return;
+    }
+
+    let horizontal = is_horizontal(graph.direction);
+    let gap = (config.node_spacing * 0.4).max(8.0);
+
+    let marker_ids: Vec<String> = nodes.keys().filter(|id| is_marker(id)).cloned().collect();
+
+    for id in marker_ids {
+        let Some(node) = nodes.get(&id) else {
+            continue;
+        };
+        if node.hidden {
+            continue;
+        }
+        let (mut mx, mut my, mw, mh) = (node.x, node.y, node.width, node.height);
+        // Resolve against each obstacle, moving along the main axis only.
+        for &(ox, oy, ow, oh) in &obstacles {
+            let overlaps = mx < ox + ow && ox < mx + mw && my < oy + oh && oy < my + mh;
+            if !overlaps {
+                continue;
+            }
+            if horizontal {
+                // Move right past the obstacle (LR flows left to right).
+                let new_x = ox + ow + gap;
+                if new_x > mx {
+                    mx = new_x;
+                }
+            } else {
+                // Move down past the obstacle (TD flows top to bottom).
+                let new_y = oy + oh + gap;
+                if new_y > my {
+                    my = new_y;
+                }
+            }
+        }
+        if let Some(node) = nodes.get_mut(&id) {
+            node.x = mx;
+            node.y = my;
+        }
+    }
+}
+
 /// For state diagrams, push nodes that are not members of any subgraph
 /// outside the subgraph bounds so they don't visually appear inside composites.
 fn push_non_members_out_of_subgraphs(
@@ -1089,7 +1159,6 @@ fn push_non_members_out_of_subgraphs(
     if graph.subgraphs.is_empty() {
         return;
     }
-
     // Collect which nodes belong to which subgraphs
     let mut node_subgraphs: HashSet<String> = HashSet::new();
     for sub in &graph.subgraphs {

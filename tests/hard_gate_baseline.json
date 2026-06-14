@@ -1,14 +1,14 @@
 {
-  "_comment": "Known hard-gate RED fixtures (one or more hard geometry violations). The hard gate fails CI only on NEW reds or WORSE violation counts vs this baseline, so we can ratchet these down without blocking other work. Lower numbers are better; remove an entry when a fixture reaches zero. See docs/benchmark-suite-design.md and scripts/hard_gate.py.",
+  "_comment": "Known hard-gate RED fixtures; gate fails on new reds or worse counts vs this baseline. Lower is better.",
   "fixtures": {
-    "benches/fixtures/flowchart_mega_nested_regions": 9,
-    "benches/fixtures/flowchart_mega_event_mesh": 8,
-    "docs/comparison_sources/state_nested": 4,
-    "tests/fixtures/flowchart/complex": 1,
-    "docs/comparison_sources/flowchart_complex": 1,
-    "docs/comparison_sources/state_fork": 1,
     "benches/fixtures/flowchart_component_packing": 1,
     "benches/fixtures/flowchart_mega_crosslane_subgraphs": 1,
-    "benches/fixtures/flowchart_path_occlusion_maze": 1
+    "benches/fixtures/flowchart_mega_event_mesh": 8,
+    "benches/fixtures/flowchart_mega_nested_regions": 9,
+    "benches/fixtures/flowchart_path_occlusion_maze": 1,
+    "docs/comparison_sources/flowchart_complex": 1,
+    "docs/comparison_sources/state_fork": 1,
+    "docs/comparison_sources/state_nested": 3,
+    "tests/fixtures/flowchart/complex": 1
   }
 }
