@@ -2411,10 +2411,20 @@ fn looks_like_date(token: &str) -> bool {
 
 fn looks_like_duration(token: &str) -> bool {
     let lower = token.to_ascii_lowercase();
-    matches!(
-        lower.chars().last(),
+    // A duration is a number followed by a unit (d/h/w/m/y), e.g. "7d", "1.5w".
+    // Requiring the leading digits avoids misreading task ids that merely end
+    // in one of those letters (e.g. "arch" ending in 'h', "day" in 'y').
+    let unit = lower.chars().last();
+    if !matches!(
+        unit,
         Some('d') | Some('h') | Some('w') | Some('m') | Some('y')
-    )
+    ) {
+        return false;
+    }
+    let digits = &lower[..lower.len() - 1];
+    !digits.is_empty()
+        && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && digits.chars().any(|c| c.is_ascii_digit())
 }
 
 fn extract_gantt_timing(details: &[String]) -> (Option<String>, Option<String>) {
