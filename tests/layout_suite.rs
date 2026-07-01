@@ -365,6 +365,7 @@ fn render_all_fixtures() {
         "flowchart/subgraph_empty.mmd",
         "flowchart/cycles.mmd",
         "flowchart/bidirectional_labels.mmd",
+        "flowchart/decision_shapes.mmd",
         "gantt/basic.mmd",
         "gitgraph/basic.mmd",
         "journey/basic.mmd",
