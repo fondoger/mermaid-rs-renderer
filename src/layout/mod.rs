@@ -2077,6 +2077,65 @@ flowchart LR
     }
 
     #[test]
+    fn dense_flowchart_mid_span_edge_stays_direct_under_fast_metrics() {
+        // Issue #79: with the fallback (font-independent) text metrics the
+        // dense layout is slightly different and the router used to spend a
+        // ~2.4x detour around the whole graph just to avoid two crossings.
+        // Fast metrics make this reproducible on any host regardless of the
+        // installed fonts.
+        let source = include_str!("../../docs/comparison_sources/flowchart_dense.mmd");
+        let parsed = parse_mermaid(source).expect("failed to parse flowchart fixture");
+        let config = LayoutConfig {
+            fast_text_metrics: true,
+            ..LayoutConfig::default()
+        };
+        let layout = compute_layout(&parsed.graph, &Theme::modern(), &config);
+
+        let be = layout
+            .edges
+            .iter()
+            .find(|edge| edge.from == "B" && edge.to == "E")
+            .expect("B->E edge");
+
+        let path_len: f32 = be
+            .points
+            .windows(2)
+            .map(|segment| {
+                let dx = segment[1].0 - segment[0].0;
+                let dy = segment[1].1 - segment[0].1;
+                (dx * dx + dy * dy).sqrt()
+            })
+            .sum();
+        let manhattan = match (be.points.first(), be.points.last()) {
+            (Some(start), Some(end)) => (end.0 - start.0).abs() + (end.1 - start.1).abs(),
+            _ => 0.0,
+        };
+
+        assert!(
+            manhattan > 0.0 && path_len / manhattan <= 2.5,
+            "dense routing should keep B->E reasonably direct under fast metrics \
+             (path={path_len:.1}, manhattan={manhattan:.1})"
+        );
+    }
+
+    #[test]
+    fn opaque_flowchart_satisfies_invariants_under_fast_metrics() {
+        // Issue #105: the Baldr->Ke2 route used to cut through its own center
+        // label box in this fixture. The invariant suite covers the default
+        // (host-font) metrics; this variant pins the same guarantee with the
+        // font-independent fallback metrics so it reproduces on any host.
+        let source = include_str!("../../docs/comparison_sources/flowchart_opaque.mmd");
+        let parsed = parse_mermaid(source).expect("failed to parse flowchart fixture");
+        let config = LayoutConfig {
+            fast_text_metrics: true,
+            ..LayoutConfig::default()
+        };
+        let layout = compute_layout(&parsed.graph, &Theme::modern(), &config);
+        crate::layout::invariants::validate_layout_invariants(&layout)
+            .expect("opaque fixture should satisfy layout invariants under fast metrics");
+    }
+
+    #[test]
     fn opaque_flowchart_routes_around_large_label_boxes() {
         let source = include_str!("../../docs/comparison_sources/flowchart_opaque.mmd");
         let parsed = parse_mermaid(source).expect("failed to parse flowchart fixture");

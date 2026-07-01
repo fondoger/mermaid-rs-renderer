@@ -75,6 +75,14 @@ const OVERLAP_TRIGGER_MIN: f32 = 4.0;
 const OVERLAP_DETOUR_MIN: f32 = 3.0;
 /// Path-length epsilon used when preferring shorter routes in tie-breaks.
 const ROUTE_LENGTH_TIE_EPS: f32 = 2.0;
+/// Max extra path length (in units of node spacing) a route may spend to
+/// avoid one edge crossing before the shorter route is preferred instead.
+const ROUTE_CROSSING_DETOUR_RATIO: f32 = 2.0;
+/// Lower bound on the node-spacing value used for the crossing detour budget.
+const ROUTE_CROSSING_DETOUR_MIN_SPACING: f32 = 40.0;
+/// A crossing-avoiding detour must also exceed this fraction of the shorter
+/// route's length before the shorter route is preferred.
+const ROUTE_CROSSING_DETOUR_RELATIVE: f32 = 1.0;
 /// Tie-break epsilon for path distance to the preferred label center.
 const ROUTE_VIA_TIE_EPS: f32 = 0.4;
 /// Soft clearance around node/subgraph obstacles used when scoring candidates.
@@ -569,6 +577,28 @@ fn route_candidate_better(
         return candidate.own_label_score < best.own_label_score;
     }
     if candidate.cross != best.cross {
+        // Avoiding crossings is worth some extra path length, but not an
+        // unbounded detour around the diagram (issue #79). The shorter route
+        // wins only when the detour is disproportionate: each avoided
+        // crossing justifies at most a fixed length premium, and the detour
+        // must also be substantially longer than the direct route.
+        let (fewer, more) = if candidate.cross < best.cross {
+            (&candidate, &best)
+        } else {
+            (&best, &candidate)
+        };
+        let crossings_avoided = more.cross.saturating_sub(fewer.cross) as f32;
+        let extra_len = fewer.len - more.len;
+        let allowance = ctx
+            .config
+            .node_spacing
+            .max(ROUTE_CROSSING_DETOUR_MIN_SPACING)
+            * ROUTE_CROSSING_DETOUR_RATIO;
+        if extra_len > crossings_avoided * allowance
+            && extra_len > more.len * ROUTE_CROSSING_DETOUR_RELATIVE
+        {
+            return candidate.len < best.len;
+        }
         return candidate.cross < best.cross;
     }
     if candidate.label_hits != best.label_hits {
@@ -2836,6 +2866,77 @@ mod tests {
         assert!(
             points.iter().any(|(_, y)| *y < -430.0 || *y > 430.0),
             "expected route to use an exterior rail outside the obstacle hull: {points:?}"
+        );
+    }
+
+    fn crossing_key(cross: usize, len: f32) -> RouteCandidateOrderKey {
+        RouteCandidateOrderKey {
+            hits: 0,
+            own_label_score: 0,
+            cross,
+            label_hits: 0,
+            overlap: 0.0,
+            via_dist: 0.0,
+            bends: 2,
+            len,
+            occupancy_score: None,
+        }
+    }
+
+    #[test]
+    fn crossing_avoidance_does_not_justify_disproportionate_detours() {
+        let config = LayoutConfig::default();
+        let from = node("a", 0.0, 0.0, 60.0, 40.0);
+        let to = node("b", 300.0, 0.0, 60.0, 40.0);
+        let ctx = RouteContext {
+            from_id: "a",
+            to_id: "b",
+            from: &from,
+            to: &to,
+            direction: Direction::LeftRight,
+            config: &config,
+            obstacles: &[],
+            label_obstacles: &[],
+            fast_route: false,
+            base_offset: 0.0,
+            start_side: EdgeSide::Right,
+            end_side: EdgeSide::Left,
+            start_offset: 0.0,
+            end_offset: 0.0,
+            stub_len: port_stub_length(&config, &from, &to),
+            start_inset: 0.0,
+            end_inset: 0.0,
+            prefer_shorter_ties: true,
+            preferred_label_id: None,
+            preferred_label_center: None,
+            preferred_label_obstacle: None,
+            preferred_label_clearance: 0.0,
+            reserved_channels: &[],
+            force_preferred_label_via: false,
+            coarse_grid_retry: false,
+            allow_exterior_fallback: true,
+        };
+
+        // A short route with a couple of crossings should beat a huge orbit
+        // that merely avoids them (issue #79: 147px direct vs 383px orbit
+        // avoiding two crossings).
+        let short_with_crossings = crossing_key(2, 147.0);
+        let long_orbit = crossing_key(0, 383.0);
+        assert!(
+            route_candidate_better(&ctx, short_with_crossings, Some(long_orbit)),
+            "shorter route should win over a disproportionate crossing-free orbit"
+        );
+        assert!(
+            !route_candidate_better(&ctx, long_orbit, Some(short_with_crossings)),
+            "orbit should not displace the shorter route"
+        );
+
+        // A modest detour that removes a crossing is still worth taking.
+        let direct_with_crossing = crossing_key(1, 150.0);
+        let modest_detour = crossing_key(0, 190.0);
+        assert!(
+            route_candidate_better(&ctx, modest_detour, Some(direct_with_crossing)),
+            "modest detours that remove crossings should still be preferred"
         );
     }
 }
