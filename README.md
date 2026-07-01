@@ -139,6 +139,9 @@ yay -S mmdr-bin
 # Pipe diagram to stdout
 echo 'flowchart LR; A-->B-->C' | mmdr -e svg
 
+# Read from stdin, write to a file (use '-i -' for explicit stdin)
+echo 'flowchart LR; A-->B-->C' | mmdr -i - -o out.svg -e svg
+
 # File to file
 mmdr -i diagram.mmd -o output.svg -e svg
 mmdr -i diagram.mmd -o output.png -e png
@@ -146,6 +149,10 @@ mmdr -i diagram.mmd -o output.png -e png
 # Render all diagrams from a Markdown file
 mmdr -i README.md -o ./diagrams/ -e svg
 ```
+
+By default the output uses the diagram's natural dimensions (the root SVG
+`width`/`height` match the `viewBox`, so there is no letterbox padding).
+Pass `--width`/`--height` to force explicit output dimensions.
 
 ## Diagram Types
 

@@ -33,13 +33,13 @@ pub struct Args {
     #[arg(short = 'c', long = "configFile")]
     pub config: Option<PathBuf>,
 
-    /// Width
-    #[arg(short = 'w', long = "width", default_value_t = 1200.0)]
-    pub width: f32,
+    /// Width (defaults to the diagram's natural size; used for PNG rasterization fallback)
+    #[arg(short = 'w', long = "width")]
+    pub width: Option<f32>,
 
-    /// Height
-    #[arg(short = 'H', long = "height", default_value_t = 800.0)]
-    pub height: f32,
+    /// Height (defaults to the diagram's natural size; used for PNG rasterization fallback)
+    #[arg(short = 'H', long = "height")]
+    pub height: Option<f32>,
 
     /// Preferred output aspect ratio (`width:height`, `width/height`, or decimal)
     #[arg(long = "preferredAspectRatio", value_parser = parse_aspect_ratio_value)]
@@ -134,11 +134,22 @@ fn parse_aspect_ratio_json(value: &serde_json::Value) -> Option<f32> {
     }
 }
 
+/// Fallback dimensions used when only one of --width/--height is given and
+/// as the usvg default size for PNG rasterization of size-less SVGs.
+const DEFAULT_WIDTH: f32 = 1200.0;
+const DEFAULT_HEIGHT: f32 = 800.0;
+
 pub fn run() -> Result<()> {
     let args = Args::parse();
     let mut base_config = load_config(args.config.as_deref())?;
-    base_config.render.width = args.width;
-    base_config.render.height = args.height;
+    // Explicit output dimensions are only forced when the user passed
+    // --width/--height; otherwise the diagram keeps its natural size (#83).
+    let explicit_dimensions = match (args.width, args.height) {
+        (None, None) => None,
+        (w, h) => Some((w.unwrap_or(DEFAULT_WIDTH), h.unwrap_or(DEFAULT_HEIGHT))),
+    };
+    base_config.render.width = args.width.unwrap_or(DEFAULT_WIDTH);
+    base_config.render.height = args.height.unwrap_or(DEFAULT_HEIGHT);
     if let Some(ratio) = args.preferred_aspect_ratio {
         base_config.layout.preferred_aspect_ratio = Some(ratio);
     }
@@ -193,8 +204,7 @@ pub fn run() -> Result<()> {
             write_layout_dump(path, &layout, &parsed.graph)?;
         }
 
-        let output_dimensions = Some((config.render.width, config.render.height));
-        let dimensions = measure_svg_dimensions(&layout, &config.layout, output_dimensions);
+        let dimensions = measure_svg_dimensions(&layout, &config.layout, explicit_dimensions);
         if args.size {
             println!("{}", serde_json::to_string_pretty(&dimensions)?);
             return Ok(());
@@ -202,7 +212,7 @@ pub fn run() -> Result<()> {
 
         let t_render_start = std::time::Instant::now();
         let svg =
-            render_svg_with_dimensions(&layout, &config.theme, &config.layout, output_dimensions);
+            render_svg_with_dimensions(&layout, &config.theme, &config.layout, explicit_dimensions);
         let render_us = t_render_start.elapsed().as_micros();
 
         match args.output_format {
@@ -252,11 +262,7 @@ pub fn run() -> Result<()> {
             }
             let (layout, _) =
                 compute_layout_with_metrics(&parsed.graph, &config.theme, &config.layout);
-            let dimensions = measure_svg_dimensions(
-                &layout,
-                &config.layout,
-                Some((config.render.width, config.render.height)),
-            );
+            let dimensions = measure_svg_dimensions(&layout, &config.layout, explicit_dimensions);
             sizes.push(serde_json::json!({
                 "index": idx,
                 "dimensions": dimensions,
@@ -281,12 +287,8 @@ pub fn run() -> Result<()> {
         {
             write_layout_dump(path, &layout, &parsed.graph)?;
         }
-        let svg = render_svg_with_dimensions(
-            &layout,
-            &config.theme,
-            &config.layout,
-            Some((config.render.width, config.render.height)),
-        );
+        let svg =
+            render_svg_with_dimensions(&layout, &config.theme, &config.layout, explicit_dimensions);
         match args.output_format {
             OutputFormat::Svg => {
                 write_output_svg(&svg, Some(&outputs[idx]))?;
