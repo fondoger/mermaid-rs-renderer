@@ -504,6 +504,13 @@ def extract_subgraph_rects(data):
         node_ids = {str(node_id) for node_id in (subgraph.get("nodes") or [])}
         if not node_ids:
             continue
+        # An edge attached to the cluster itself (composite state / subgraph
+        # used as an edge endpoint) must reach the cluster rect, so the
+        # cluster's own id/label count as members for intrusion checks.
+        for key in ("id", "label"):
+            value = subgraph.get(key)
+            if value:
+                node_ids.add(str(value))
         rects.append((node_ids, (x, y, w, h)))
     return rects
 

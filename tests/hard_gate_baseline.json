@@ -5,8 +5,6 @@
     "benches/fixtures/flowchart_mega_crosslane_subgraphs": 1,
     "benches/fixtures/flowchart_mega_event_mesh": 8,
     "benches/fixtures/flowchart_mega_nested_regions": 9,
-    "benches/fixtures/flowchart_path_occlusion_maze": 1,
-    "docs/comparison_sources/state_fork": 1,
-    "docs/comparison_sources/state_nested": 3
+    "benches/fixtures/flowchart_path_occlusion_maze": 1
   }
 }
