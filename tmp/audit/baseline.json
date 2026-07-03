@@ -1,0 +1,539 @@
+{
+  "fc_basic": {
+    "edge_count": 5,
+    "node_count": 5,
+    "edge_crossings": 0,
+    "crossing_pairs": [],
+    "total_edge_length": 304.9,
+    "bbox_area": 82560.0,
+    "width": 543.33386,
+    "height": 151.95084,
+    "labels_with_anchor": 2,
+    "label_edge_dist_max": 24.16,
+    "label_edge_dist_mean": 20.18,
+    "label_edge_distances": {
+      "1:B->C": 24.16,
+      "2:B->D": 16.2
+    },
+    "label_label_overlaps": 0,
+    "label_label_pairs": [],
+    "label_node_overlaps": 0,
+    "label_node_pairs": []
+  },
+  "fc_bidirectional_labels": {
+    "edge_count": 8,
+    "node_count": 5,
+    "edge_crossings": 0,
+    "crossing_pairs": [],
+    "total_edge_length": 1237.8,
+    "bbox_area": 169519.0,
+    "width": 361.12555,
+    "height": 469.41837,
+    "labels_with_anchor": 8,
+    "label_edge_dist_max": 24.57,
+    "label_edge_dist_mean": 18.9,
+    "label_edge_distances": {
+      "0:dep1->link1": 24.57,
+      "1:link1->sub1": 21.79,
+      "2:sub1->link1": 15.86,
+      "3:link1->dep1": 20.49,
+      "4:link1->link2": 16.1,
+      "5:link2->link1": 16.1,
+      "6:link2->sub2": 20.5,
+      "7:sub2->link2": 15.76
+    },
+    "label_label_overlaps": 0,
+    "label_label_pairs": [],
+    "label_node_overlaps": 0,
+    "label_node_pairs": []
+  },
+  "fc_complex": {
+    "edge_count": 19,
+    "node_count": 13,
+    "edge_crossings": 3,
+    "crossing_pairs": [
+      [
+        "13:K->M",
+        "15:D->M"
+      ],
+      [
+        "15:D->M",
+        "18:G->D"
+      ],
+      [
+        "16:A->E",
+        "17:C->J"
+      ]
+    ],
+    "total_edge_length": 5505.4,
+    "bbox_area": 878931.9,
+    "width": 613.2,
+    "height": 1433.3528,
+    "labels_with_anchor": 6,
+    "label_edge_dist_max": 29.84,
+    "label_edge_dist_mean": 24.96,
+    "label_edge_distances": {
+      "1:B->C": 21.74,
+      "2:B->D": 24.76,
+      "11:J->K": 28.9,
+      "12:J->L": 28.31,
+      "16:A->E": 16.2,
+      "18:G->D": 29.84
+    },
+    "label_label_overlaps": 0,
+    "label_label_pairs": [],
+    "label_node_overlaps": 0,
+    "label_node_pairs": []
+  },
+  "fc_cycles": {
+    "edge_count": 9,
+    "node_count": 8,
+    "edge_crossings": 1,
+    "crossing_pairs": [
+      [
+        "6:G->H",
+        "7:H->F"
+      ]
+    ],
+    "total_edge_length": 1226.1,
+    "bbox_area": 332727.0,
+    "width": 455.81934,
+    "height": 729.95374,
+    "labels_with_anchor": 3,
+    "label_edge_dist_max": 20.5,
+    "label_edge_dist_mean": 17.65,
+    "label_edge_distances": {
+      "1:B->C": 20.5,
+      "3:D->B": 16.61,
+      "4:D->E": 15.84
+    },
+    "label_label_overlaps": 0,
+    "label_label_pairs": [],
+    "label_node_overlaps": 0,
+    "label_node_pairs": []
+  },
+  "fc_decision_shapes": {
+    "edge_count": 5,
+    "node_count": 5,
+    "edge_crossings": 0,
+    "crossing_pairs": [],
+    "total_edge_length": 783.9,
+    "bbox_area": 215822.5,
+    "width": 401.328,
+    "height": 537.7709,
+    "labels_with_anchor": 3,
+    "label_edge_dist_max": 22.74,
+    "label_edge_dist_mean": 18.38,
+    "label_edge_distances": {
+      "1:B->C": 22.74,
+      "2:B->D": 16.2,
+      "3:D->B": 16.2
+    },
+    "label_label_overlaps": 0,
+    "label_label_pairs": [],
+    "label_node_overlaps": 0,
+    "label_node_pairs": []
+  },
+  "fc_dense": {
+    "edge_count": 22,
+    "node_count": 12,
+    "edge_crossings": 11,
+    "crossing_pairs": [
+      [
+        "1:A->C",
+        "20:A->L"
+      ],
+      [
+        "3:B->E",
+        "7:C->F"
+      ],
+      [
+        "3:B->E",
+        "12:B->H"
+      ],
+      [
+        "4:C->E",
+        "7:C->F"
+      ],
+      [
+        "5:D->E",
+        "6:B->F"
+      ],
+      [
+        "5:D->E",
+        "7:C->F"
+      ],
+      [
+        "5:D->E",
+        "12:B->H"
+      ],
+      [
+        "6:B->F",
+        "7:C->F"
+      ],
+      [
+        "7:C->F",
+        "12:B->H"
+      ],
+      [
+        "9:E->G",
+        "12:B->H"
+      ],
+      [
+        "18:L->I",
+        "20:A->L"
+      ]
+    ],
+    "total_edge_length": 4690.1,
+    "bbox_area": 371034.4,
+    "width": 1144.2501,
+    "height": 324.2599,
+    "labels_with_anchor": 0,
+    "label_edge_dist_max": null,
+    "label_edge_dist_mean": null,
+    "label_edge_distances": {},
+    "label_label_overlaps": 0,
+    "label_label_pairs": [],
+    "label_node_overlaps": 0,
+    "label_node_pairs": []
+  },
+  "fc_edges": {
+    "edge_count": 5,
+    "node_count": 10,
+    "edge_crossings": 0,
+    "crossing_pairs": [],
+    "total_edge_length": 395.8,
+    "bbox_area": 282974.2,
+    "width": 1617.2704,
+    "height": 174.97025,
+    "labels_with_anchor": 0,
+    "label_edge_dist_max": null,
+    "label_edge_dist_mean": null,
+    "label_edge_distances": {},
+    "label_label_overlaps": 0,
+    "label_label_pairs": [],
+    "label_node_overlaps": 0,
+    "label_node_pairs": []
+  },
+  "fc_ports_arrow_pathing_regression": {
+    "edge_count": 10,
+    "node_count": 8,
+    "edge_crossings": 4,
+    "crossing_pairs": [
+      [
+        "1:A2->H",
+        "9:H->A2"
+      ],
+      [
+        "5:H->O2",
+        "6:H->O3"
+      ],
+      [
+        "5:H->O2",
+        "8:O2->H"
+      ],
+      [
+        "6:H->O3",
+        "8:O2->H"
+      ]
+    ],
+    "total_edge_length": 4058.3,
+    "bbox_area": 606938.7,
+    "width": 1440.082,
+    "height": 421.46118,
+    "labels_with_anchor": 5,
+    "label_edge_dist_max": 33.6,
+    "label_edge_dist_mean": 23.41,
+    "label_edge_distances": {
+      "0:A1->H": 19.11,
+      "2:A3->H": 32.52,
+      "4:H->O1": 33.6,
+      "8:O2->H": 16.2,
+      "9:H->A2": 15.6
+    },
+    "label_label_overlaps": 0,
+    "label_label_pairs": [],
+    "label_node_overlaps": 3,
+    "label_node_pairs": [
+      [
+        "4:H->O1",
+        "O1"
+      ],
+      [
+        "9:H->A2",
+        "A2"
+      ],
+      [
+        "9:H->A2",
+        "A3"
+      ]
+    ]
+  },
+  "fc_ports": {
+    "edge_count": 20,
+    "node_count": 12,
+    "edge_crossings": 23,
+    "crossing_pairs": [
+      [
+        "0:A->B",
+        "1:A->C"
+      ],
+      [
+        "1:A->C",
+        "2:A->D"
+      ],
+      [
+        "1:A->C",
+        "3:A->E"
+      ],
+      [
+        "2:A->D",
+        "3:A->E"
+      ],
+      [
+        "5:A->G",
+        "9:A->K"
+      ],
+      [
+        "6:A->H",
+        "7:A->I"
+      ],
+      [
+        "6:A->H",
+        "8:A->J"
+      ],
+      [
+        "6:A->H",
+        "9:A->K"
+      ],
+      [
+        "7:A->I",
+        "8:A->J"
+      ],
+      [
+        "7:A->I",
+        "9:A->K"
+      ],
+      [
+        "8:A->J",
+        "9:A->K"
+      ],
+      [
+        "10:B->L",
+        "11:C->L"
+      ],
+      [
+        "10:B->L",
+        "12:D->L"
+      ],
+      [
+        "10:B->L",
+        "13:E->L"
+      ],
+      [
+        "11:C->L",
+        "12:D->L"
+      ],
+      [
+        "11:C->L",
+        "13:E->L"
+      ],
+      [
+        "12:D->L",
+        "13:E->L"
+      ],
+      [
+        "16:H->L",
+        "17:I->L"
+      ],
+      [
+        "16:H->L",
+        "18:J->L"
+      ],
+      [
+        "16:H->L",
+        "19:K->L"
+      ],
+      [
+        "17:I->L",
+        "18:J->L"
+      ],
+      [
+        "17:I->L",
+        "19:K->L"
+      ],
+      [
+        "18:J->L",
+        "19:K->L"
+      ]
+    ],
+    "total_edge_length": 5739.7,
+    "bbox_area": 340566.4,
+    "width": 1428.9635,
+    "height": 238.33105,
+    "labels_with_anchor": 0,
+    "label_edge_dist_max": null,
+    "label_edge_dist_mean": null,
+    "label_edge_distances": {},
+    "label_label_overlaps": 0,
+    "label_label_pairs": [],
+    "label_node_overlaps": 0,
+    "label_node_pairs": []
+  },
+  "fc_subgraph": {
+    "edge_count": 3,
+    "node_count": 4,
+    "edge_crossings": 0,
+    "crossing_pairs": [],
+    "total_edge_length": 219.1,
+    "bbox_area": 102833.9,
+    "width": 699.55066,
+    "height": 147.0,
+    "labels_with_anchor": 0,
+    "label_edge_dist_max": null,
+    "label_edge_dist_mean": null,
+    "label_edge_distances": {},
+    "label_label_overlaps": 0,
+    "label_label_pairs": [],
+    "label_node_overlaps": 0,
+    "label_node_pairs": []
+  },
+  "issue28": {
+    "edge_count": 4,
+    "node_count": 5,
+    "edge_crossings": 0,
+    "crossing_pairs": [],
+    "total_edge_length": 224.1,
+    "bbox_area": 144378.6,
+    "width": 596.05774,
+    "height": 242.22252,
+    "labels_with_anchor": 2,
+    "label_edge_dist_max": 46.5,
+    "label_edge_dist_mean": 34.57,
+    "label_edge_distances": {
+      "0:client->ingress": 46.5,
+      "1:ingress->service": 22.64
+    },
+    "label_label_overlaps": 0,
+    "label_label_pairs": [],
+    "label_node_overlaps": 1,
+    "label_node_pairs": [
+      [
+        "0:client->ingress",
+        "client"
+      ]
+    ]
+  },
+  "issue29": {
+    "edge_count": 16,
+    "node_count": 9,
+    "edge_crossings": 9,
+    "crossing_pairs": [
+      [
+        "1:Forseti->Baldr",
+        "7:Forseti->Baldr"
+      ],
+      [
+        "1:Forseti->Baldr",
+        "13:Forseti->Baldr"
+      ],
+      [
+        "3:Baldr->Forseti",
+        "9:Ke2->Baldr"
+      ],
+      [
+        "5:Forseti->Ke1",
+        "12:Ke3->Forseti"
+      ],
+      [
+        "6:Ke1->Forseti",
+        "12:Ke3->Forseti"
+      ],
+      [
+        "9:Ke2->Baldr",
+        "14:Baldr->ServerFinish"
+      ],
+      [
+        "9:Ke2->Baldr",
+        "15:ServerFinish->Baldr"
+      ],
+      [
+        "11:Forseti->Ke3",
+        "12:Ke3->Forseti"
+      ],
+      [
+        "14:Baldr->ServerFinish",
+        "15:ServerFinish->Baldr"
+      ]
+    ],
+    "total_edge_length": 7630.0,
+    "bbox_area": 1749885.2,
+    "width": 1616.4594,
+    "height": 1082.542,
+    "labels_with_anchor": 16,
+    "label_edge_dist_max": 90.48,
+    "label_edge_dist_mean": 31.89,
+    "label_edge_distances": {
+      "0:Forseti->User": 16.1,
+      "1:Forseti->Baldr": 24.39,
+      "2:Baldr->ServerDB": 28.2,
+      "3:Baldr->Forseti": 90.48,
+      "4:User->Forseti": 39.84,
+      "5:Forseti->Ke1": 16.2,
+      "6:Ke1->Forseti": 16.2,
+      "7:Forseti->Baldr": 16.2,
+      "8:Baldr->Ke2": 79.53,
+      "9:Ke2->Baldr": 39.07,
+      "10:Baldr->Forseti": 16.2,
+      "11:Forseti->Ke3": 28.2,
+      "12:Ke3->Forseti": 28.2,
+      "13:Forseti->Baldr": 16.2,
+      "14:Baldr->ServerFinish": 39.07,
+      "15:ServerFinish->Baldr": 16.2
+    },
+    "label_label_overlaps": 0,
+    "label_label_pairs": [],
+    "label_node_overlaps": 3,
+    "label_node_pairs": [
+      [
+        "0:Forseti->User",
+        "User"
+      ],
+      [
+        "1:Forseti->Baldr",
+        "Ke1"
+      ],
+      [
+        "8:Baldr->Ke2",
+        "Ke2"
+      ]
+    ]
+  },
+  "issue63": {
+    "edge_count": 8,
+    "node_count": 5,
+    "edge_crossings": 0,
+    "crossing_pairs": [],
+    "total_edge_length": 1237.8,
+    "bbox_area": 169519.0,
+    "width": 361.12555,
+    "height": 469.41837,
+    "labels_with_anchor": 8,
+    "label_edge_dist_max": 24.57,
+    "label_edge_dist_mean": 18.9,
+    "label_edge_distances": {
+      "0:dep1->link1": 24.57,
+      "1:link1->sub1": 21.79,
+      "2:sub1->link1": 15.86,
+      "3:link1->dep1": 20.49,
+      "4:link1->link2": 16.1,
+      "5:link2->link1": 16.1,
+      "6:link2->sub2": 20.5,
+      "7:sub2->link2": 15.76
+    },
+    "label_label_overlaps": 0,
+    "label_label_pairs": [],
+    "label_node_overlaps": 0,
+    "label_node_pairs": []
+  }
+}
