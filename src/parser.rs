@@ -5291,6 +5291,21 @@ fn add_node_to_subgraph(graph: &mut Graph, idx: usize, node_id: &str) {
 }
 
 fn add_node_to_subgraphs(graph: &mut Graph, subgraph_stack: &[usize], node_id: &str) {
+    if subgraph_stack.is_empty() {
+        return;
+    }
+    // Mermaid-js parity (flowDb `makeUniq`/`exists`): a node belongs to the
+    // first subgraph that claims it. Referencing the node later inside an
+    // unrelated subgraph must not add it there too, otherwise sibling
+    // subgraph node sets overlap and their boxes are forced to overlap.
+    // Membership in the current stack chain (ancestors) is fine: that is how
+    // nested subgraphs are represented here.
+    let claimed_elsewhere = graph.subgraphs.iter().enumerate().any(|(idx, sub)| {
+        !subgraph_stack.contains(&idx) && sub.nodes.iter().any(|n| n == node_id)
+    });
+    if claimed_elsewhere {
+        return;
+    }
     for idx in subgraph_stack {
         add_node_to_subgraph(graph, *idx, node_id);
     }
@@ -6314,6 +6329,53 @@ mod tests {
     #[test]
     fn split_on_ampersand_plain() {
         assert_eq!(split_on_ampersand("A & B & C"), vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn subgraph_membership_first_claim_wins() {
+        // Mermaid-js parity: a node referenced inside a second, unrelated
+        // subgraph stays in the subgraph that first claimed it.
+        let input = "flowchart TD\nsubgraph One\n  A --> B\nend\nsubgraph Two\n  B --> C\nend";
+        let parsed = parse_mermaid(input).unwrap();
+        let one = parsed
+            .graph
+            .subgraphs
+            .iter()
+            .find(|s| s.id.as_deref() == Some("One"))
+            .unwrap();
+        let two = parsed
+            .graph
+            .subgraphs
+            .iter()
+            .find(|s| s.id.as_deref() == Some("Two"))
+            .unwrap();
+        assert_eq!(one.nodes, vec!["A", "B"]);
+        assert_eq!(two.nodes, vec!["C"], "B must not join a second subgraph");
+    }
+
+    #[test]
+    fn subgraph_membership_nested_chain_keeps_ancestors() {
+        // Nested subgraphs still record the node in the whole stack chain.
+        let input =
+            "flowchart TD\nsubgraph Outer\n  subgraph Inner\n    A --> B\n  end\nend\nB --> C";
+        let parsed = parse_mermaid(input).unwrap();
+        let outer = parsed
+            .graph
+            .subgraphs
+            .iter()
+            .find(|s| s.id.as_deref() == Some("Outer"))
+            .unwrap();
+        let inner = parsed
+            .graph
+            .subgraphs
+            .iter()
+            .find(|s| s.id.as_deref() == Some("Inner"))
+            .unwrap();
+        assert!(outer.nodes.contains(&"A".to_string()));
+        assert!(outer.nodes.contains(&"B".to_string()));
+        assert!(inner.nodes.contains(&"A".to_string()));
+        assert!(inner.nodes.contains(&"B".to_string()));
+        assert!(!outer.nodes.contains(&"C".to_string()));
     }
 
     #[test]
