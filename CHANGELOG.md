@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.3.0 (2026-07-02)
+
+### Render Size Metadata API
+- Added `measure_svg_dimensions` / `render_svg_with_dimensions` and a `--size` CLI flag so embedders can get exact output dimensions before rasterizing.
+- CLI defaults to the diagram's natural dimensions (#83).
+
+### Subgraph Containment Overhaul
+- Sibling subgraph membership now matches mermaid-js (`flowDb.makeUniq`): a node belongs to the first subgraph that claims it, so referencing it in a later subgraph no longer forces boxes to overlap.
+- New routing pass detours edges around subgraph boxes that contain neither endpoint.
+- New placement pass evicts non-member nodes that visually land inside subgraph boxes.
+- Hard gate is now 215 GREEN / 0 RED across the corpus (was 9 RED fixtures with 25 intruding edges).
+
+### Layout and Routing Fixes
+- Port-driven grid placement and port-aware routing for architecture-beta (#112, #59).
+- Capped crossing-avoidance detours in flowchart route selection (#79).
+- Hardened routing against empty candidate lists (#37).
+- Fixed flowchart edge zig-zag and orbit artifacts; kept back-edge outer lanes through port refinement.
+- Routed C4 connectors around intervening shapes.
+- Separated state pseudostate markers from overlapping states.
+- Fixed 'unexpected token end' for sequence frames and block-beta named groups (#102).
+- Fixed gantt task ids ending in a duration letter being misparsed.
+
+### Themes and Styling
+- Added dark/forest/neutral theme presets and `--theme` CLI flag (#73).
+- Fixed pie slice colors, legend overlap (#69), and CJK title clipping (#112).
+- Added `mindmap.edgeColor` config (#49).
+
+### Quality Gates and Detection
+- Hard gate gained semantic containment predicates (foreign-node containment, member escape), label-overflow, and canvas-overflow detectors.
+- Layout dumps now expose edge label anchors/extents for external metric tooling.
+- Added determinism, invariant, semantic, and output-shape suites plus baseline ratcheting.
+
+### Packaging
+- Release builds use fat LTO (#13); arm64 release artifacts (#71); Nix flake (#99).
+
 ## v0.2.2 (2026-04-23)
 
 ### Visual and Layout Fixes
