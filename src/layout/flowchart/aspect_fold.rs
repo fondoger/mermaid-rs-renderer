@@ -322,8 +322,10 @@ fn plan_band_ranges(extents: &[RankExtent], band_count: usize) -> Vec<Range<usiz
 }
 
 /// Apply the serpentine fold: each band is rebased to main 0 (odd bands are
-/// mirrored) and stacked along the cross axis with a wrap-edge gutter.
-/// Returns the band index per node id.
+/// mirrored) and stacked along the cross axis with a wrap-edge gutter. Each
+/// band is then shifted along the main axis so its entry rank sits directly
+/// under the previous band's exit rank, keeping wrap edges short even when
+/// band spans are unbalanced. Returns the band index per node id.
 fn apply_fold_to_nodes(
     ranges: &[Range<usize>],
     extents: &[RankExtent],
@@ -333,6 +335,7 @@ fn apply_fold_to_nodes(
 ) -> HashMap<String, usize> {
     let mut node_bands: HashMap<String, usize> = HashMap::new();
     let mut cross_offset = 0.0f32;
+    let mut prev_exit_center: Option<f32> = None;
     for (band_idx, range) in ranges.iter().enumerate() {
         let reversed = band_idx % 2 == 1;
         let band_main_origin = extents[range.start].main_start;
@@ -356,20 +359,63 @@ fn apply_fold_to_nodes(
             continue;
         }
 
+        // Band-local main position: rebase to 0, mirroring odd bands.
+        let local_main = |node: &NodeLayout| {
+            let rebased = node.x - band_main_origin;
+            if reversed {
+                band_main_span - (rebased + node.width)
+            } else {
+                rebased
+            }
+        };
+        // Align this band's entry rank (its first rank in rank order, which
+        // mirroring places on the previous band's exit side) under the
+        // previous band's exit rank so the wrap edge is a straight hop.
+        let rank_local_center = |rank_idx: usize, nodes: &BTreeMap<String, NodeLayout>| {
+            let mut min_main = f32::MAX;
+            let mut max_main = f32::MIN;
+            for id in &ranks[rank_idx] {
+                if let Some(node) = nodes.get(id) {
+                    let main = local_main(node);
+                    min_main = min_main.min(main);
+                    max_main = max_main.max(main + node.width);
+                }
+            }
+            (min_main + max_main) * 0.5
+        };
+        let shift = match prev_exit_center {
+            Some(prev) => prev - rank_local_center(range.start, nodes),
+            None => 0.0,
+        };
+
         for rank_idx in range.clone() {
             for id in &ranks[rank_idx] {
                 if let Some(node) = nodes.get_mut(id) {
-                    let rebased = node.x - band_main_origin;
-                    node.x = if reversed {
-                        band_main_span - (rebased + node.width)
-                    } else {
-                        rebased
+                    let main = {
+                        let rebased = node.x - band_main_origin;
+                        if reversed {
+                            band_main_span - (rebased + node.width)
+                        } else {
+                            rebased
+                        }
                     };
+                    node.x = main + shift;
                     node.y = (node.y - band_cross_min) + cross_offset;
                     node_bands.insert(id.clone(), band_idx);
                 }
             }
         }
+        prev_exit_center = Some({
+            let mut min_main = f32::MAX;
+            let mut max_main = f32::MIN;
+            for id in &ranks[range.end - 1] {
+                if let Some(node) = nodes.get(id) {
+                    min_main = min_main.min(node.x);
+                    max_main = max_main.max(node.x + node.width);
+                }
+            }
+            (min_main + max_main) * 0.5
+        });
         cross_offset += (band_cross_max - band_cross_min) + gutter;
     }
     node_bands
