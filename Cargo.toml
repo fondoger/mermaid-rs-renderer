@@ -1,6 +1,6 @@
 [package]
 name = "mermaid-rs-renderer"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 description = "Fast Mermaid diagram renderer in pure Rust - 23 diagram types, 100-1400x faster than mermaid-cli"
 license = "MIT"
