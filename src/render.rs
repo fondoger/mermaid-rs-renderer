@@ -2235,12 +2235,16 @@ fn render_requirement(layout: &Layout, theme: &Theme, config: &LayoutConfig) -> 
     let measure_font_size = theme.font_size.max(16.0);
     let line_height = measure_font_size * config.label_line_height;
 
-    let render_line = |x: f32, y: f32, text: &str, color: &str, bold: bool| -> String {
+    // SVG `<text>` y is the alphabetic baseline, but the offsets below are
+    // computed as glyph-top positions. Shift by the font ascent so header
+    // text stays inside the box and body text clears the divider line.
+    let ascent = theme.font_size * 0.8;
+    let render_line = move |x: f32, y: f32, text: &str, color: &str, bold: bool| -> String {
         let weight = if bold { " font-weight=\"bold\"" } else { "" };
         format!(
             "<text x=\"{x:.2}\" y=\"{y:.2}\" text-anchor=\"start\" font-family=\"{font_family}\" font-size=\"{size}\" fill=\"{color}\"{weight}>{text}</text>",
             x = x,
-            y = y,
+            y = y + ascent,
             font_family = font_family,
             size = theme.font_size,
             color = color,
