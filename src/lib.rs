@@ -108,8 +108,8 @@ pub use config::{Config, LayoutConfig, RenderConfig, merge_init_config};
 pub use error::ParseError;
 pub use ir::{
     DiagramKind, Direction, Edge, EdgeArrowhead, EdgeDecoration, EdgeStyle, Graph, Node, NodeLink,
-    NodeShape, SequenceActivation, SequenceActivationKind, SequenceBox, StateNote,
-    StateNotePosition, Subgraph,
+    NodeShape, RadarCurve, RadarData, RadarEntry, RadarGraticule, SequenceActivation,
+    SequenceActivationKind, SequenceBox, StateNote, StateNotePosition, Subgraph,
 };
 pub use layout::{
     EdgeLayout, Layout, LayoutStageMetrics, NodeLayout, SubgraphLayout, compute_layout,

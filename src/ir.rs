@@ -448,7 +448,7 @@ pub struct Graph {
     pub gantt_sections: Vec<String>,
     pub gantt_display_mode: Option<String>,
     pub journey_title: Option<String>,
-    pub radar_title: Option<String>,
+    pub radar: RadarData,
     pub gitgraph: GitGraphData,
     pub class_defs: HashMap<String, NodeStyle>,
     pub node_classes: HashMap<String, Vec<String>>,
@@ -543,6 +543,50 @@ pub struct XYChartData {
     pub series: Vec<XYSeries>,
 }
 
+/// Graticule (grid ring) style for radar charts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RadarGraticule {
+    #[default]
+    Circle,
+    Polygon,
+}
+
+/// One value entry in a radar curve.
+///
+/// Positional entries bind to the declared axis at the same entry index;
+/// named entries (`axis: value`) bind to the axis with a matching label.
+/// `None` values are empty or non-numeric tokens, kept in place so later
+/// entries stay bound to their correct axes (lenient handling; upstream
+/// mermaid.js raises a parse error instead).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RadarEntry {
+    Positional(Option<f32>),
+    Named(String, Option<f32>),
+}
+
+#[derive(Debug, Clone)]
+pub struct RadarCurve {
+    pub name: String,
+    pub entries: Vec<RadarEntry>,
+}
+
+/// Structural radar diagram data carried from the parser to layout/render.
+/// Curves are never round-tripped through node label strings, so axis and
+/// curve names may contain any characters (including `:`).
+#[derive(Debug, Clone, Default)]
+pub struct RadarData {
+    pub title: Option<String>,
+    pub axes: Vec<String>,
+    pub curves: Vec<RadarCurve>,
+    /// Explicit scale maximum (`max` directive). Defaults to the data max.
+    pub max: Option<f32>,
+    /// Explicit scale minimum (`min` directive). Defaults to 0.
+    pub min: Option<f32>,
+    /// Number of graticule rings (`ticks` directive). Defaults to 5.
+    pub ticks: Option<usize>,
+    pub graticule: RadarGraticule,
+}
+
 #[derive(Debug, Clone)]
 pub struct TimelineEvent {
     pub time: String,
@@ -596,7 +640,7 @@ impl Graph {
             gantt_sections: Vec::new(),
             gantt_display_mode: None,
             journey_title: None,
-            radar_title: None,
+            radar: RadarData::default(),
             gitgraph: GitGraphData::default(),
             class_defs: HashMap::new(),
             node_classes: HashMap::new(),

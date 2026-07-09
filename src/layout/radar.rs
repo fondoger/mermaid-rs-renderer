@@ -2,17 +2,17 @@ use std::collections::BTreeMap;
 use std::f32::consts::PI;
 
 use crate::config::LayoutConfig;
-use crate::ir::Graph;
+use crate::ir::{Graph, RadarData, RadarEntry};
 use crate::theme::Theme;
 
 use super::text::{measure_label, measure_label_with_font_size};
-use super::{DiagramData, Layout, build_node_layout, resolve_node_style};
+use super::{DiagramData, Layout, RadarSeriesLayout};
 
 // Single source of truth for radar geometry. `render_radar` in src/render.rs
 // draws with these same constants so layout bounds and rendered geometry can
 // never disagree.
 pub(crate) const MAX_RADIUS: f32 = 300.0;
-pub(crate) const GRID_STEPS: usize = 5;
+pub(crate) const DEFAULT_TICKS: usize = 5;
 pub(crate) const AXIS_LABEL_OFFSET: f32 = 15.0;
 pub(crate) const AXIS_LABEL_NUDGE: f32 = 6.0;
 pub(crate) const AXIS_LABEL_FONT_SIZE: f32 = 12.0;
@@ -94,64 +94,140 @@ pub(crate) fn axis_label_width(axis: &str, theme: &Theme, config: &LayoutConfig)
     .width
 }
 
-/// Axis names shared by the layout and the renderer: the first curve node
-/// whose label carries parseable "axis: value" lines defines the axis order.
-fn extract_axes(labels: &[&str]) -> Vec<String> {
-    for label in labels {
-        let mut lines = label
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty());
-        let Some(_name) = lines.next() else {
-            continue;
-        };
-        let mut axes = Vec::new();
-        for line in lines {
-            let Some((axis_raw, value_raw)) = line.split_once(':') else {
-                continue;
-            };
-            let axis = axis_raw.trim();
-            let value = value_raw.trim();
-            if axis.is_empty() || value.is_empty() || value.parse::<f32>().is_err() {
-                continue;
+/// Effective axis list for a radar chart.
+///
+/// Declared axes are authoritative: every curve binds to them regardless of
+/// where (or whether) the `axis` line appeared relative to the `curve` lines.
+/// When no axis was declared at all, axes are synthesized so curves still
+/// render: named entries contribute their names in first-appearance order,
+/// then unlabeled axes pad up to the longest positional curve.
+fn effective_axes(radar: &RadarData) -> Vec<String> {
+    if !radar.axes.is_empty() {
+        return radar.axes.clone();
+    }
+    let mut axes: Vec<String> = Vec::new();
+    let mut max_positional = 0usize;
+    for curve in &radar.curves {
+        max_positional = max_positional.max(curve.entries.len());
+        for entry in &curve.entries {
+            if let RadarEntry::Named(name, _) = entry
+                && !axes.iter().any(|axis| axis == name)
+            {
+                axes.push(name.clone());
             }
-            axes.push(axis.to_string());
-        }
-        if !axes.is_empty() {
-            return axes;
         }
     }
-    Vec::new()
+    while axes.len() < max_positional {
+        axes.push(String::new());
+    }
+    axes
+}
+
+/// Resolves curves against the axis list into per-axis value rows, clamped to
+/// `[min_value, max_value]`.
+///
+/// Positional entries bind by index; entries beyond the axis count are
+/// truncated. Named entries bind by axis name (unknown names are ignored,
+/// matching upstream, which never looks up extras). Missing, empty, and
+/// non-numeric values fall back to `min_value` (the chart center) without
+/// shifting later positional values, because the parser preserves their slots.
+struct ResolvedRadar {
+    axes: Vec<String>,
+    series: Vec<RadarSeriesLayout>,
+    min_value: f32,
+    max_value: f32,
+    ticks: usize,
+}
+
+fn resolve_radar(radar: &RadarData) -> ResolvedRadar {
+    let axes = effective_axes(radar);
+
+    let min_value = radar.min.filter(|value| value.is_finite()).unwrap_or(0.0);
+    let mut data_max = f32::NEG_INFINITY;
+
+    let mut series = Vec::with_capacity(radar.curves.len());
+    for curve in &radar.curves {
+        let mut values: Vec<Option<f32>> = vec![None; axes.len()];
+        for (idx, entry) in curve.entries.iter().enumerate() {
+            match entry {
+                RadarEntry::Positional(value) => {
+                    if let Some(slot) = values.get_mut(idx) {
+                        *slot = value.filter(|value| value.is_finite());
+                    }
+                }
+                RadarEntry::Named(name, value) => {
+                    if let Some(pos) = axes.iter().position(|axis| axis == name)
+                        && let Some(slot) = values.get_mut(pos)
+                    {
+                        *slot = value.filter(|value| value.is_finite());
+                    }
+                }
+            }
+        }
+        for value in values.iter().flatten() {
+            data_max = data_max.max(*value);
+        }
+        series.push((curve.name.clone(), values));
+    }
+
+    let max_value = radar
+        .max
+        .filter(|value| value.is_finite())
+        .unwrap_or(if data_max.is_finite() { data_max } else { 0.0 });
+    // Degenerate or inverted scales (all values at/below min, or an explicit
+    // max <= min) collapse to a unit span so radii stay finite.
+    let max_value = if max_value > min_value {
+        max_value
+    } else {
+        min_value + 1.0
+    };
+
+    let series = series
+        .into_iter()
+        .map(|(name, values)| RadarSeriesLayout {
+            name,
+            values: values
+                .into_iter()
+                .map(|value| value.unwrap_or(min_value).clamp(min_value, max_value))
+                .collect(),
+        })
+        .collect();
+
+    ResolvedRadar {
+        axes,
+        series,
+        min_value,
+        max_value,
+        ticks: radar.ticks.unwrap_or(DEFAULT_TICKS).max(1),
+    }
 }
 
 pub(super) fn compute_radar_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) -> Layout {
+    let resolved = resolve_radar(&graph.radar);
     let legend_offset = MAX_RADIUS * LEGEND_OFFSET_FACTOR;
     let row_height = legend_row_height(theme.font_size);
 
-    let mut node_ids: Vec<String> = graph.nodes.keys().cloned().collect();
-    node_ids.sort_by(|a, b| {
-        let order_a = graph.node_order.get(a).copied().unwrap_or(usize::MAX);
-        let order_b = graph.node_order.get(b).copied().unwrap_or(usize::MAX);
-        order_a.cmp(&order_b).then_with(|| a.cmp(b))
-    });
-
     // Canvas half-extents around the chart center, grown by measured axis
-    // label and legend geometry so outward-anchored labels never clip.
+    // label, legend, and title geometry so nothing clips at the canvas edge.
     let mut left = MIN_HALF_EXTENT;
     let mut right = MIN_HALF_EXTENT;
     let mut top = MIN_HALF_EXTENT;
     let mut bottom = MIN_HALF_EXTENT;
 
-    let ordered_labels: Vec<&str> = node_ids
-        .iter()
-        .filter_map(|id| graph.nodes.get(id).map(|node| node.label.as_str()))
-        .collect();
-    let axes = extract_axes(&ordered_labels);
-    for (idx, axis) in axes.iter().enumerate() {
-        let angle = axis_angle(idx, axes.len());
+    for (idx, axis) in resolved.axes.iter().enumerate() {
+        if axis.is_empty() {
+            continue;
+        }
+        let angle = axis_angle(idx, resolved.axes.len());
         let (lx, ly, anchor) = axis_label_position(angle);
-        let w = axis_label_width(axis, theme, config);
-        let (x0, x1) = axis_label_x_extent(lx, anchor, w);
+        let block = measure_label_with_font_size(
+            axis,
+            AXIS_LABEL_FONT_SIZE,
+            config,
+            false,
+            theme.font_family.as_str(),
+        );
+        let (x0, x1) = axis_label_x_extent(lx, anchor, block.width);
         let half_h = AXIS_LABEL_FONT_SIZE / 2.0;
         left = left.max(-x0 + CANVAS_MARGIN);
         right = right.max(x1 + CANVAS_MARGIN);
@@ -159,45 +235,53 @@ pub(super) fn compute_radar_layout(graph: &Graph, theme: &Theme, config: &Layout
         bottom = bottom.max(ly + half_h + CANVAS_MARGIN);
     }
 
-    struct LegendEntry {
-        id: String,
-        nl: crate::layout::NodeLayout,
+    let mut legend_blocks = Vec::with_capacity(resolved.series.len());
+    for (idx, series) in resolved.series.iter().enumerate() {
+        let label = measure_label(&series.name, theme, config);
+        let row_y = -legend_offset + idx as f32 * row_height;
+        right = right
+            .max(legend_offset + LEGEND_BOX_SIZE + LEGEND_GAP + label.width + CANVAS_MARGIN);
+        bottom = bottom.max(row_y + label.height.max(LEGEND_BOX_SIZE) + CANVAS_MARGIN);
+        legend_blocks.push(label);
     }
-    let mut legend_entries = Vec::new();
-    for (idx, node_id) in node_ids.iter().enumerate() {
-        let Some(node) = graph.nodes.get(node_id) else {
-            continue;
-        };
-        let label = measure_label(&node.label, theme, config);
-        let width = LEGEND_BOX_SIZE + LEGEND_GAP + label.width;
-        let height = label.height.max(LEGEND_BOX_SIZE);
-        let mut style = resolve_node_style(node.id.as_str(), graph);
-        if style.stroke.is_none() {
-            style.stroke = Some("none".to_string());
-        }
-        if style.stroke_width.is_none() {
-            style.stroke_width = Some(0.0);
-        }
-        let nl = build_node_layout(node, label, width, height, style, graph);
-        right = right.max(legend_offset + nl.width + CANVAS_MARGIN);
-        bottom = bottom.max(-legend_offset + idx as f32 * row_height + nl.height + CANVAS_MARGIN);
-        legend_entries.push(LegendEntry {
-            id: node.id.clone(),
-            nl,
-        });
+
+    if let Some(title) = graph.radar.title.as_deref() {
+        let block = measure_label(title, theme, config);
+        left = left.max(block.width / 2.0 + CANVAS_MARGIN);
+        right = right.max(block.width / 2.0 + CANVAS_MARGIN);
     }
 
     let center_x = left;
     let center_y = top;
-    let width = left + right;
-    let height = top + bottom;
 
+    // Legend rows as NodeLayouts: kept purely as geometry (bounds metrics,
+    // invariants, layout dumps). The renderer draws legends from the
+    // structural series list, never from these nodes.
     let mut nodes = BTreeMap::new();
-    for (idx, entry) in legend_entries.into_iter().enumerate() {
-        let mut nl = entry.nl;
-        nl.x = center_x + legend_offset;
-        nl.y = center_y - legend_offset + idx as f32 * row_height;
-        nodes.insert(entry.id, nl);
+    for (idx, label) in legend_blocks.into_iter().enumerate() {
+        let width = LEGEND_BOX_SIZE + LEGEND_GAP + label.width;
+        let height = label.height.max(LEGEND_BOX_SIZE);
+        let mut style = crate::ir::NodeStyle::default();
+        style.stroke = Some("none".to_string());
+        style.stroke_width = Some(0.0);
+        let id = format!("radar_{idx}");
+        nodes.insert(
+            id.clone(),
+            crate::layout::NodeLayout {
+                id,
+                x: center_x + legend_offset,
+                y: center_y - legend_offset + idx as f32 * row_height,
+                width,
+                height,
+                label,
+                shape: crate::ir::NodeShape::Circle,
+                style,
+                link: None,
+                anchor_subgraph: None,
+                hidden: false,
+                icon: None,
+            },
+        );
     }
 
     Layout {
@@ -205,12 +289,18 @@ pub(super) fn compute_radar_layout(graph: &Graph, theme: &Theme, config: &Layout
         nodes,
         edges: Vec::new(),
         subgraphs: Vec::new(),
-        width,
-        height,
+        width: left + right,
+        height: top + bottom,
         diagram: DiagramData::Radar(super::RadarLayout {
-            title: graph.radar_title.clone(),
+            title: graph.radar.title.clone(),
             center_x,
             center_y,
+            axes: resolved.axes,
+            series: resolved.series,
+            min_value: resolved.min_value,
+            max_value: resolved.max_value,
+            ticks: resolved.ticks,
+            graticule: graph.radar.graticule,
         }),
     }
 }

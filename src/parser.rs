@@ -4298,7 +4298,6 @@ fn parse_radar_diagram(input: &str) -> Result<ParseOutput> {
     graph.kind = DiagramKind::Radar;
     graph.direction = Direction::LeftRight;
     let (lines, init_config) = preprocess_input(input)?;
-    let mut axes: Vec<String> = Vec::new();
 
     for raw_line in lines {
         let line = raw_line.trim();
@@ -4312,59 +4311,129 @@ fn parse_radar_diagram(input: &str) -> Result<ParseOutput> {
         if lower.starts_with("title") {
             let rest = line.get(5..).unwrap_or("").trim();
             if !rest.is_empty() {
-                graph.radar_title = Some(strip_quotes(rest));
+                graph.radar.title = Some(strip_quotes(rest));
             }
             continue;
         }
         if lower.starts_with("axis") {
             let rest = line.get(4..).unwrap_or("").trim();
-            axes = split_args(rest)
-                .into_iter()
-                .map(|value| strip_quotes(value.trim()))
-                .filter(|value| !value.is_empty())
-                .collect();
+            // Additional `axis` lines extend the axis list (mermaid.js
+            // radar allows multiple axis statements).
+            graph.radar.axes.extend(
+                split_args(rest)
+                    .into_iter()
+                    .map(|value| strip_quotes(value.trim()))
+                    .filter(|value| !value.is_empty()),
+            );
             continue;
         }
-        if lower.starts_with("curve")
-            && let Some((name, values)) = parse_radar_curve(line)
-        {
-            let node_id = format!("radar_{}", graph.nodes.len());
-            let mut label_lines = Vec::new();
-            label_lines.push(name);
-            if !values.is_empty() {
-                for (idx, value) in values.iter().enumerate() {
-                    if let Some(axis) = axes.get(idx) {
-                        label_lines.push(format!("{}: {}", axis, value));
-                    } else {
-                        label_lines.push(value.to_string());
-                    }
-                }
+        if lower.starts_with("curve") {
+            if let Some(curve) = parse_radar_curve(line) {
+                graph.radar.curves.push(curve);
             }
-            graph.ensure_node(
-                &node_id,
-                Some(label_lines.join("\n")),
-                Some(crate::ir::NodeShape::Circle),
-            );
+            continue;
+        }
+        if lower.starts_with("max ") || lower == "max" {
+            if let Ok(value) = line.get(3..).unwrap_or("").trim().parse::<f32>() {
+                graph.radar.max = Some(value);
+            }
+            continue;
+        }
+        if lower.starts_with("min ") || lower == "min" {
+            if let Ok(value) = line.get(3..).unwrap_or("").trim().parse::<f32>() {
+                graph.radar.min = Some(value);
+            }
+            continue;
+        }
+        if lower.starts_with("ticks") {
+            if let Ok(value) = line.get(5..).unwrap_or("").trim().parse::<usize>() {
+                graph.radar.ticks = Some(value.max(1));
+            }
+            continue;
+        }
+        if lower.starts_with("graticule") {
+            let rest = line.get(9..).unwrap_or("").trim().to_ascii_lowercase();
+            graph.radar.graticule = match rest.as_str() {
+                "polygon" => crate::ir::RadarGraticule::Polygon,
+                _ => crate::ir::RadarGraticule::Circle,
+            };
+            continue;
         }
     }
 
     Ok(ParseOutput { graph, init_config })
 }
 
-fn parse_radar_curve(line: &str) -> Option<(String, Vec<String>)> {
+/// Parses one `curve Name {entries}` line into a structural curve.
+///
+/// Entries stay positional (index-aligned with the declared axes) with
+/// non-numeric tokens preserved as `None`, so one bad token cannot shift
+/// later values onto the wrong axes. Named `axis: value` entries (mermaid.js
+/// `DetailedEntry`) keep their author-provided binding; the pair splits on
+/// the LAST `:` so axis names containing `:` survive intact.
+fn parse_radar_curve(line: &str) -> Option<crate::ir::RadarCurve> {
+    use crate::ir::{RadarCurve, RadarEntry};
     let rest = line.get(5..).unwrap_or("").trim();
     let (name_part, values_part) = rest.split_once('{')?;
     let name = strip_quotes(name_part.trim());
-    let values_raw = values_part.split_once('}')?.0;
-    let values = split_args(values_raw)
-        .into_iter()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>();
     if name.is_empty() {
         return None;
     }
-    Some((name, values))
+    let values_raw = values_part.split_once('}')?.0;
+    let entries = split_args_keep_empty(values_raw)
+        .into_iter()
+        .map(|token| {
+            // Named form `axis: value`: only counts as named when the value
+            // side parses as a number and the axis side is non-empty;
+            // otherwise the whole token is one positional value.
+            if let Some((axis_raw, value_raw)) = token.rsplit_once(':') {
+                let axis = strip_quotes(axis_raw.trim());
+                if !axis.is_empty()
+                    && let Ok(value) = value_raw.trim().parse::<f32>()
+                {
+                    return RadarEntry::Named(axis, Some(value));
+                }
+            }
+            RadarEntry::Positional(strip_quotes(&token).parse::<f32>().ok())
+        })
+        .collect();
+    Some(RadarCurve { name, entries })
+}
+
+/// Comma-split that PRESERVES interior empty slots (unlike `split_args`), so
+/// `{3, , 5}` keeps value 5 bound to the third axis instead of shifting it
+/// onto the second. Quotes still protect embedded commas. Trailing empties
+/// ("{1,2,}" or a lone "{ }") are syntax noise, not positional gaps, and are
+/// dropped from the end.
+fn split_args_keep_empty(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    for ch in input.chars() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+            current.push(ch);
+            continue;
+        }
+        if ch == '"' || ch == '\'' {
+            quote = Some(ch);
+            current.push(ch);
+            continue;
+        }
+        if ch == ',' {
+            args.push(current.trim().to_string());
+            current.clear();
+            continue;
+        }
+        current.push(ch);
+    }
+    args.push(current.trim().to_string());
+    while args.last().is_some_and(|arg| arg.is_empty()) {
+        args.pop();
+    }
+    args
 }
 
 fn parse_treemap_diagram(input: &str) -> Result<ParseOutput> {
@@ -7200,7 +7269,18 @@ A["foo & bar"] & B --> C"#;
         let input = "radar-beta\n  axis A, B, C\n  curve Alpha {1,2,3}";
         let parsed = parse_mermaid(input).unwrap();
         assert_eq!(parsed.graph.kind, DiagramKind::Radar);
-        assert_eq!(parsed.graph.nodes.len(), 1);
+        assert_eq!(parsed.graph.radar.axes, vec!["A", "B", "C"]);
+        assert_eq!(parsed.graph.radar.curves.len(), 1);
+        let curve = &parsed.graph.radar.curves[0];
+        assert_eq!(curve.name, "Alpha");
+        assert_eq!(
+            curve.entries,
+            vec![
+                crate::ir::RadarEntry::Positional(Some(1.0)),
+                crate::ir::RadarEntry::Positional(Some(2.0)),
+                crate::ir::RadarEntry::Positional(Some(3.0)),
+            ]
+        );
     }
 
     #[test]

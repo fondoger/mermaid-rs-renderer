@@ -447,6 +447,17 @@ pub struct PieData {
     pub title: Option<PieTitleLayout>,
 }
 
+/// One resolved radar series: values are index-aligned with
+/// [`RadarLayout::axes`] and already clamped to `[min_value, max_value]`.
+#[derive(Debug, Clone)]
+pub struct RadarSeriesLayout {
+    pub name: String,
+    pub values: Vec<f32>,
+}
+
+/// Structural radar layout: the renderer draws exclusively from this data
+/// (never by re-parsing node label strings), so axis and curve names may
+/// contain any characters, including `:` and newlines-free arbitrary text.
 #[derive(Debug, Clone)]
 pub struct RadarLayout {
     pub title: Option<String>,
@@ -454,6 +465,17 @@ pub struct RadarLayout {
     /// axis-label and legend extents, so the center is not simply width/2.
     pub center_x: f32,
     pub center_y: f32,
+    /// Axis labels in declared order. Synthesized (empty) labels are used
+    /// when curves exist but no `axis` line was declared.
+    pub axes: Vec<String>,
+    pub series: Vec<RadarSeriesLayout>,
+    /// Scale minimum (chart center). `min` directive, defaults to 0.
+    pub min_value: f32,
+    /// Scale maximum (outer ring). `max` directive, defaults to the data max.
+    pub max_value: f32,
+    /// Number of graticule rings.
+    pub ticks: usize,
+    pub graticule: crate::ir::RadarGraticule,
 }
 
 #[derive(Debug, Clone)]

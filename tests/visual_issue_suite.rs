@@ -475,7 +475,7 @@ fn radar_title_renders_above_top_axis_label() {
     let input = "radar-beta\n  title Skill Assessment\n  axis A, B, C\n  curve Alpha {1,2,3}\n";
     let (graph, _layout, svg) = render(input);
     assert_eq!(graph.kind, DiagramKind::Radar);
-    assert_eq!(graph.radar_title.as_deref(), Some("Skill Assessment"));
+    assert_eq!(graph.radar.title.as_deref(), Some("Skill Assessment"));
     assert!(
         svg.contains(">Skill Assessment</text>"),
         "radar title text should be rendered in the SVG output"
@@ -528,7 +528,7 @@ fn radar_without_title_emits_no_empty_text_placeholder() {
     let input = "radar-beta\n  axis A, B, C\n  curve Alpha {1,2,3}\n";
     let (graph, _layout, svg) = render(input);
     assert_eq!(graph.kind, DiagramKind::Radar);
-    assert!(graph.radar_title.is_none());
+    assert!(graph.radar.title.is_none());
     assert!(
         !svg.contains("></text>") || !svg.contains("y=\"-350"),
         "no empty title placeholder expected when there is no title"
@@ -540,7 +540,7 @@ fn radar_without_title_emits_no_empty_text_placeholder() {
 fn radar_title_quoted_and_escaped() {
     let input = "radar-beta\n  title \"Q1 <Goals> & Metrics\"\n  axis A, B\n  curve C {1,2}\n";
     let (graph, _layout, svg) = render(input);
-    assert_eq!(graph.radar_title.as_deref(), Some("Q1 <Goals> & Metrics"));
+    assert_eq!(graph.radar.title.as_deref(), Some("Q1 <Goals> & Metrics"));
     assert!(
         svg.contains("Q1 &lt;Goals&gt; &amp; Metrics"),
         "radar title should be XML-escaped in SVG output"

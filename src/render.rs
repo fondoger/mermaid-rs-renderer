@@ -2440,8 +2440,8 @@ fn render_radar(layout: &Layout, theme: &Theme, _config: &LayoutConfig) -> Strin
     // Geometry constants are shared with the layout stage (single source of
     // truth) so canvas bounds always match rendered geometry.
     use crate::layout::radar::{
-        AXIS_LABEL_FONT_SIZE, GRID_STEPS, LEGEND_BOX_SIZE, LEGEND_GAP, LEGEND_OFFSET_FACTOR,
-        MAX_RADIUS, axis_angle, axis_label_position, legend_row_height,
+        AXIS_LABEL_FONT_SIZE, LEGEND_BOX_SIZE, LEGEND_GAP, LEGEND_OFFSET_FACTOR, MAX_RADIUS,
+        axis_angle, axis_label_position, legend_row_height,
     };
 
     // Upstream mermaid: graticuleColor defaults to #DEDEDE in every theme,
@@ -2452,86 +2452,22 @@ fn render_radar(layout: &Layout, theme: &Theme, _config: &LayoutConfig) -> Strin
     const RADAR_HUES: [i32; 12] = [240, 60, 80, 270, 300, 330, 0, 30, 90, 150, 180, 210];
     const RADAR_LIGHTNESS: &str = "76.2745098039%";
 
-    fn radar_index(id: &str) -> usize {
-        id.rsplit('_')
-            .next()
-            .and_then(|part| part.parse::<usize>().ok())
-            .unwrap_or(usize::MAX)
-    }
-
-    fn parse_series(node: &crate::layout::NodeLayout) -> Option<(String, Vec<(String, f32)>)> {
-        let mut lines = node
-            .label
-            .lines
-            .iter()
-            .map(|line| line.trim())
-            .filter(|line| !line.is_empty());
-        let name = lines.next()?.to_string();
-        let mut pairs = Vec::new();
-        for line in lines {
-            let Some((axis_raw, value_raw)) = line.split_once(':') else {
-                continue;
-            };
-            let axis = axis_raw.trim();
-            let value_str = value_raw.trim();
-            if axis.is_empty() || value_str.is_empty() {
-                continue;
-            }
-            let Ok(value) = value_str.parse::<f32>() else {
-                continue;
-            };
-            pairs.push((axis.to_string(), value.max(0.0)));
-        }
-        if pairs.is_empty() {
-            None
-        } else {
-            Some((name, pairs))
-        }
-    }
-
-    let mut nodes: Vec<&crate::layout::NodeLayout> =
-        layout.nodes.values().filter(|node| !node.hidden).collect();
-    nodes.sort_by_key(|node| radar_index(&node.id));
-
-    let mut raw_series = Vec::new();
-    for node in nodes {
-        if let Some(series) = parse_series(node) {
-            raw_series.push(series);
-        }
-    }
-    let Some((_, first_pairs)) = raw_series.first() else {
+    // All radar data is structural: the parser resolved axes, series values,
+    // and scale into DiagramData::Radar, so nothing is re-parsed from label
+    // strings and names may contain any characters (issue: long axis names
+    // were wrapped by measure_label and then corrupted by a ':' re-parse).
+    let crate::layout::DiagramData::Radar(radar) = &layout.diagram else {
         return String::new();
     };
 
-    let axes: Vec<String> = first_pairs.iter().map(|(axis, _)| axis.clone()).collect();
-    let axis_count = axes.len();
-    if axis_count == 0 {
+    let axis_count = radar.axes.len();
+    if axis_count == 0 || radar.series.is_empty() {
         return String::new();
     }
 
-    let mut series_values: Vec<(String, Vec<f32>)> = Vec::new();
-    let mut max_value = 0.0f32;
-    for (name, pairs) in &raw_series {
-        let mut values = Vec::with_capacity(axis_count);
-        for axis in &axes {
-            let value = pairs
-                .iter()
-                .find_map(|(a, v)| (a == axis).then_some(*v))
-                .unwrap_or(0.0);
-            max_value = max_value.max(value);
-            values.push(value);
-        }
-        series_values.push((name.clone(), values));
-    }
-
-    if max_value <= 0.0 {
-        max_value = 1.0;
-    }
-    let scale = MAX_RADIUS / max_value;
-    let (center_x, center_y) = match &layout.diagram {
-        crate::layout::DiagramData::Radar(radar) => (radar.center_x, radar.center_y),
-        _ => (layout.width / 2.0, layout.height / 2.0),
-    };
+    let span = radar.max_value - radar.min_value;
+    let scale = if span > 0.0 { MAX_RADIUS / span } else { 0.0 };
+    let (center_x, center_y) = (radar.center_x, radar.center_y);
 
     let mut svg = String::new();
     svg.push_str(&format!(
@@ -2539,15 +2475,32 @@ fn render_radar(layout: &Layout, theme: &Theme, _config: &LayoutConfig) -> Strin
         center_x, center_y
     ));
 
-    for step in 1..=GRID_STEPS {
-        let r = MAX_RADIUS * step as f32 / GRID_STEPS as f32;
-        svg.push_str(&format!(
-            "<circle r=\"{:.3}\" fill=\"{}\" fill-opacity=\"0.3\" stroke=\"{}\" stroke-width=\"1\" />",
-            r, GRID_COLOR, GRID_COLOR
-        ));
+    for step in 1..=radar.ticks {
+        let r = MAX_RADIUS * step as f32 / radar.ticks as f32;
+        match radar.graticule {
+            crate::ir::RadarGraticule::Circle => {
+                svg.push_str(&format!(
+                    "<circle r=\"{:.3}\" fill=\"{}\" fill-opacity=\"0.3\" stroke=\"{}\" stroke-width=\"1\" />",
+                    r, GRID_COLOR, GRID_COLOR
+                ));
+            }
+            crate::ir::RadarGraticule::Polygon => {
+                let points: Vec<String> = (0..axis_count)
+                    .map(|idx| {
+                        let angle = axis_angle(idx, axis_count);
+                        format!("{:.3},{:.3}", r * angle.cos(), r * angle.sin())
+                    })
+                    .collect();
+                let d = format!("M{} Z", points.join(" L"));
+                svg.push_str(&format!(
+                    "<path d=\"{}\" fill=\"{}\" fill-opacity=\"0.3\" stroke=\"{}\" stroke-width=\"1\" />",
+                    d, GRID_COLOR, GRID_COLOR
+                ));
+            }
+        }
     }
 
-    for (idx, axis) in axes.iter().enumerate() {
+    for (idx, axis) in radar.axes.iter().enumerate() {
         let angle = axis_angle(idx, axis_count);
         let x = MAX_RADIUS * angle.cos();
         let y = MAX_RADIUS * angle.sin();
@@ -2557,6 +2510,9 @@ fn render_radar(layout: &Layout, theme: &Theme, _config: &LayoutConfig) -> Strin
             y,
             escape_xml(&theme.line_color)
         ));
+        if axis.is_empty() {
+            continue;
+        }
         // Labels anchor away from the chart: 'start' on the right, 'end' on
         // the left, so text extends outward instead of over the gridlines.
         let (lx, ly, anchor) = axis_label_position(angle);
@@ -2572,13 +2528,13 @@ fn render_radar(layout: &Layout, theme: &Theme, _config: &LayoutConfig) -> Strin
         ));
     }
 
-    for (series_idx, (name, values)) in series_values.iter().enumerate() {
+    for (series_idx, series) in radar.series.iter().enumerate() {
         let hue = RADAR_HUES[series_idx % RADAR_HUES.len()];
         let color = format!("hsl({}, 100%, {})", hue, RADAR_LIGHTNESS);
         let mut points = Vec::with_capacity(axis_count);
-        for (idx, value) in values.iter().enumerate() {
+        for (idx, value) in series.values.iter().enumerate() {
             let angle = axis_angle(idx, axis_count);
-            let r = value * scale;
+            let r = (value - radar.min_value) * scale;
             points.push((r * angle.cos(), r * angle.sin()));
         }
         if points.is_empty() {
@@ -2615,15 +2571,11 @@ fn render_radar(layout: &Layout, theme: &Theme, _config: &LayoutConfig) -> Strin
             legend_y,
             normalize_font_family(&theme.font_family),
             escape_xml(&theme.text_color),
-            escape_xml(name)
+            escape_xml(&series.name)
         ));
     }
 
-    let title = match &layout.diagram {
-        crate::layout::DiagramData::Radar(radar) => radar.title.as_deref(),
-        _ => None,
-    };
-    if let Some(title) = title {
+    if let Some(title) = radar.title.as_deref() {
         // Keep the title above the top axis label: the topmost axis label sits at
         // -(MAX_RADIUS + AXIS_LABEL_OFFSET) with a middle baseline, while the title
         // hangs downward from -(MAX_RADIUS + 50), leaving a clear gap between them.
