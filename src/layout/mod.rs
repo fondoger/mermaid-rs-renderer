@@ -68,12 +68,10 @@ const PREFERRED_ASPECT_MAX_EXPANSION: f32 = 24.0;
 const PREFERRED_ASPECT_MAX_PASSES: usize = 6;
 
 // ── State diagram constants ───────────────────────────────────────────
-const STATE_MARKER_FONT_SCALE: f32 = 0.75;
-const STATE_MARKER_MIN_SIZE: f32 = 10.0;
-const STATE_DEFAULT_HEIGHT_SCALE: f32 = 2.4;
-const STATE_MARKER_DIV: f32 = 3.0;
-const STATE_MARKER_MIN_SCALE: f32 = 0.5;
-const STATE_MARKER_MAX_SCALE: f32 = 0.95;
+// Start/end pseudostate markers use a constant size derived from the font
+// size only. Deriving it from neighbor node heights collapsed the markers
+// when short fork/join bars dragged the average down.
+const STATE_MARKER_SIZE_SCALE: f32 = 0.95;
 const STATE_NOTE_PAD_X_SCALE: f32 = 0.75;
 const STATE_NOTE_PAD_Y_SCALE: f32 = 0.5;
 const STATE_NOTE_GAP_SCALE: f32 = 0.9;
@@ -439,9 +437,6 @@ fn compute_flowchart_layout(
     if graph.kind == crate::ir::DiagramKind::Class {
         label_config.label_line_height = label_config.class_label_line_height();
     }
-    let mut state_marker_ids: Vec<String> = Vec::new();
-    let mut state_height_total = 0.0f32;
-    let mut state_height_count = 0usize;
 
     for node in graph.nodes.values() {
         let label = measure_label_with_font_size(
@@ -461,13 +456,9 @@ fn compute_flowchart_layout(
                 crate::ir::NodeShape::Circle | crate::ir::NodeShape::DoubleCircle
             )
         {
-            let size = (theme.font_size * STATE_MARKER_FONT_SCALE).max(STATE_MARKER_MIN_SIZE);
+            let size = theme.font_size * STATE_MARKER_SIZE_SCALE;
             width = size;
             height = size;
-            state_marker_ids.push(node.id.clone());
-        } else if graph.kind == crate::ir::DiagramKind::State {
-            state_height_total += height;
-            state_height_count += 1;
         }
         let mut style = resolve_node_style(node.id.as_str(), graph);
         if graph.kind == crate::ir::DiagramKind::State
@@ -489,24 +480,6 @@ fn compute_flowchart_layout(
             node.id.clone(),
             build_node_layout(node, label, width, height, style, graph),
         );
-    }
-
-    if graph.kind == crate::ir::DiagramKind::State && !state_marker_ids.is_empty() {
-        let avg_height = if state_height_count > 0 {
-            state_height_total / state_height_count as f32
-        } else {
-            theme.font_size * STATE_DEFAULT_HEIGHT_SCALE
-        };
-        let marker_size = (avg_height / STATE_MARKER_DIV).clamp(
-            theme.font_size * STATE_MARKER_MIN_SCALE,
-            theme.font_size * STATE_MARKER_MAX_SCALE,
-        );
-        for id in state_marker_ids {
-            if let Some(node) = nodes.get_mut(&id) {
-                node.width = marker_size;
-                node.height = marker_size;
-            }
-        }
     }
 
     flowchart::policy::apply_measured_spacing_heuristics(

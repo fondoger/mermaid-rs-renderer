@@ -43,6 +43,7 @@ const BENCH_FIXTURES: &[&str] = &[
     "sequence_tiny",
     "class_medium",
     "state_medium",
+    "state_forkjoin",
     "sequence_medium",
     "er_medium",
     "pie_medium",
@@ -234,6 +235,10 @@ fn fixture(name: &str) -> &'static str {
             env!("CARGO_MANIFEST_DIR"),
             "/benches/fixtures/state_medium.mmd"
         )),
+        "state_forkjoin" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/benches/fixtures/state_forkjoin.mmd"
+        )),
         "sequence_medium" => include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/benches/fixtures/sequence_medium.mmd"
@@ -356,6 +361,7 @@ fn bench_parse(c: &mut Criterion) {
         "sequence_tiny",
         "class_medium",
         "state_medium",
+        "state_forkjoin",
         "sequence_medium",
         "er_medium",
         "pie_medium",
@@ -426,6 +432,7 @@ fn bench_layout(c: &mut Criterion) {
         "class_medium",
         "state_tiny",
         "state_medium",
+        "state_forkjoin",
         "sequence_tiny",
         "sequence_medium",
         "er_medium",
@@ -559,6 +566,7 @@ fn bench_render(c: &mut Criterion) {
         "class_medium",
         "state_tiny",
         "state_medium",
+        "state_forkjoin",
         "sequence_tiny",
         "sequence_medium",
         "er_medium",
@@ -631,6 +639,7 @@ fn bench_end_to_end(c: &mut Criterion) {
         "class_medium",
         "state_tiny",
         "state_medium",
+        "state_forkjoin",
         "sequence_tiny",
         "sequence_medium",
         "er_medium",
