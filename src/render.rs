@@ -2391,6 +2391,8 @@ fn render_requirement(layout: &Layout, theme: &Theme, config: &LayoutConfig) -> 
         let body_lines = if lines.len() > 2 { &lines[2..] } else { &[] };
         let header_x = node.x + req.label_padding_x;
         let header_y = node.y + req.label_padding_y;
+        let min_header_gap = theme.font_size * 1.25;
+        let header_gap = req.header_line_gap.max(min_header_gap);
         if header_count >= 1 {
             svg.push_str(&render_line(
                 header_x,
@@ -2401,13 +2403,15 @@ fn render_requirement(layout: &Layout, theme: &Theme, config: &LayoutConfig) -> 
             ));
         }
         if header_count >= 2 {
-            let min_header_gap = theme.font_size * 1.25;
-            let id_y = header_y + req.header_line_gap.max(min_header_gap);
+            let id_y = header_y + header_gap;
             svg.push_str(&render_line(header_x, id_y, &lines[1], label_color, true));
         }
 
         if !body_lines.is_empty() {
-            let divider_y = node.y + req.header_band_height;
+            // Keep the divider below the header text even when the font size
+            // exceeds what the configured fixed band height assumes, so
+            // header glyphs never cross the divider line.
+            let divider_y = node.y + req.divider_offset(theme.font_size, line_height);
             svg.push_str(&format!(
                 "<line x1=\"{:.2}\" y1=\"{:.2}\" x2=\"{:.2}\" y2=\"{:.2}\" stroke=\"{}\" stroke-width=\"{}\"/>",
                 node.x,

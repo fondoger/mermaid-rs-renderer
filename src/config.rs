@@ -63,6 +63,23 @@ pub struct RequirementConfig {
     pub render_padding_y: f32,
 }
 
+impl RequirementConfig {
+    /// Y offset of the header/body divider from the requirement box top.
+    ///
+    /// The configured `header_band_height` is a minimum: the two header lines
+    /// are laid out as glyph tops at `label_padding_y` and `label_padding_y +
+    /// max(header_line_gap, 1.25 * font_size)`, each one `line_height` tall,
+    /// so with large fonts a fixed band (52px default) would let the ID row
+    /// cross the divider. Grow the band so the divider always clears the
+    /// header text. Shared by the renderer (divider/body placement) and the
+    /// layout stage (node height).
+    pub fn divider_offset(&self, font_size: f32, line_height: f32) -> f32 {
+        let header_gap = self.header_line_gap.max(font_size * 1.25);
+        let header_content_bottom = self.label_padding_y + header_gap + line_height;
+        self.header_band_height.max(header_content_bottom)
+    }
+}
+
 impl Default for RequirementConfig {
     fn default() -> Self {
         Self {

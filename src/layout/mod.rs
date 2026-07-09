@@ -1424,6 +1424,28 @@ fn shape_size(
     if kind == crate::ir::DiagramKind::Requirement {
         let min_width = theme.font_size * REQUIREMENT_MIN_WIDTH_SCALE;
         width = width.max(min_width);
+        // The requirement renderer indents text by
+        // `requirement.label_padding_x` from the box's left edge, so the box
+        // must reserve at least that much horizontal padding per side or the
+        // widest label line overflows the right border.
+        let min_render_width = label.width + config.requirement.label_padding_x * 2.0;
+        width = width.max(min_render_width);
+        // Mirror the renderer's vertical layout: two header lines above a
+        // divider at `divider_offset`, then body lines starting at
+        // `divider + label_padding_y` with one `line_height` per line. When
+        // the divider is pushed down (large fonts or an explicit
+        // header_band_height override) the box must grow with it, or the
+        // last body lines render below the box bottom.
+        if label.lines.len() > 2 {
+            let req = &config.requirement;
+            let measure_font_size = theme.font_size.max(16.0);
+            let line_height = measure_font_size * config.label_line_height;
+            let divider = req.divider_offset(theme.font_size, line_height);
+            let body_lines = (label.lines.len() - 2) as f32;
+            let min_render_height =
+                divider + req.label_padding_y * 2.0 + body_lines * line_height;
+            height = height.max(min_render_height);
+        }
     }
 
     if kind == crate::ir::DiagramKind::Kanban {
