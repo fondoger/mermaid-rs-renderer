@@ -280,3 +280,365 @@ fn mindmap_edge_color_config_overrides_section_palette() {
         "configured mindmap edgeColor should appear in the SVG output"
     );
 }
+
+#[test]
+fn state_final_marker_renders_ring_plus_filled_dot_bullseye() {
+    let input = r#"stateDiagram-v2
+    [*] --> Working
+    Working --> [*]
+"#;
+    let (_, layout, svg) = render(input);
+    let end_node = layout
+        .nodes
+        .values()
+        .find(|n| n.id.starts_with("__end_"))
+        .expect("state diagram should have an end marker node");
+    assert_eq!(end_node.shape, NodeShape::DoubleCircle);
+    let cx = end_node.x + end_node.width / 2.0;
+    let cy = end_node.y + end_node.height / 2.0;
+    let at_center: Vec<&str> = svg
+        .split("<circle ")
+        .skip(1)
+        .filter(|c| {
+            c.contains(&format!("cx=\"{:.2}\"", cx)) && c.contains(&format!("cy=\"{:.2}\"", cy))
+        })
+        .collect();
+    assert!(
+        at_center.len() >= 2,
+        "final-state marker should be a bullseye with an outer ring and an inner dot, got {} circles",
+        at_center.len()
+    );
+    let theme = Theme::modern();
+    let ring = at_center
+        .iter()
+        .find(|c| c.contains(&format!("stroke=\"{}\"", theme.primary_border_color)))
+        .expect("bullseye should have a ring stroked with the border color");
+    assert!(
+        ring.contains(&format!("fill=\"{}\"", theme.background)),
+        "bullseye ring should have a hollow (background) fill"
+    );
+    let dot = at_center
+        .iter()
+        .find(|c| c.contains(&format!("fill=\"{}\"", theme.primary_border_color)))
+        .expect("bullseye should have an inner dot filled with the border color");
+    assert!(
+        dot.contains("stroke=\"none\""),
+        "inner dot should be a plain filled circle"
+    );
+}
+
+#[test]
+fn state_final_marker_bullseye_inside_composite_state() {
+    let input = r#"stateDiagram-v2
+    state Comp {
+        [*] --> Inner
+        Inner --> [*]
+    }
+"#;
+    let (_, layout, svg) = render(input);
+    let end_nodes: Vec<_> = layout
+        .nodes
+        .values()
+        .filter(|n| n.id.starts_with("__end_"))
+        .collect();
+    assert!(
+        !end_nodes.is_empty(),
+        "composite state should contain an end marker node"
+    );
+    for end_node in end_nodes {
+        let cx = end_node.x + end_node.width / 2.0;
+        let cy = end_node.y + end_node.height / 2.0;
+        let at_center = svg
+            .split("<circle ")
+            .skip(1)
+            .filter(|c| {
+                c.contains(&format!("cx=\"{:.2}\"", cx))
+                    && c.contains(&format!("cy=\"{:.2}\"", cy))
+            })
+            .count();
+        assert!(
+            at_center >= 2,
+            "composite end marker should render as a bullseye (ring + dot), got {at_center} circles"
+        );
+    }
+}
+
+#[test]
+fn labeled_double_circle_keeps_concentric_outline() {
+    let input = r#"flowchart TD
+    A(((Label))) --> B
+"#;
+    let (_, layout, svg) = render(input);
+    let node = layout.nodes.get("A").expect("double circle node A");
+    assert_eq!(node.shape, NodeShape::DoubleCircle);
+    let cx = node.x + node.width / 2.0;
+    let cy = node.y + node.height / 2.0;
+    let at_center: Vec<&str> = svg
+        .split("<circle ")
+        .skip(1)
+        .filter(|c| {
+            c.contains(&format!("cx=\"{:.2}\"", cx)) && c.contains(&format!("cy=\"{:.2}\"", cy))
+        })
+        .collect();
+    assert_eq!(
+        at_center.len(),
+        2,
+        "labeled double circle should keep exactly two concentric circles"
+    );
+    assert!(
+        at_center.iter().any(|c| c.contains("fill=\"none\"")),
+        "labeled double circle inner ring should stay unfilled so the label remains readable"
+    );
+}
+
+#[test]
+fn radar_negative_values_clamp_to_center_matching_upstream_min_default() {
+    // Upstream mermaid radar clips values to [min, max] with min defaulting to 0
+    // (packages/mermaid/src/diagrams/radar/db.ts `min: 0`, renderer.ts
+    // relativeRadius clippedValue = min(max(value, minValue), maxValue)).
+    // Our renderer clamps via value.max(0.0) in parse_series
+    // (src/render.rs:~2477); negative entries must land at the chart center
+    // (radius 0) with no panic.
+    let input = r#"radar-beta
+  axis A, B, C
+  curve Neg {-3, 5, -1}
+  curve Pos {2, 4, 6}
+"#;
+    let (graph, _layout, svg) = render(input);
+    assert_eq!(graph.kind, DiagramKind::Radar);
+    let curve_paths: Vec<&str> = svg
+        .split("<path d=\"")
+        .skip(1)
+        .filter(|chunk| chunk.contains("fill-opacity=\"0.5\""))
+        .map(|chunk| chunk.split('"').next().unwrap())
+        .collect();
+    assert_eq!(curve_paths.len(), 2, "both curves should render");
+    // max_value across the chart is 6 and MAX_RADIUS is 300, so B (value 5)
+    // sits at r=250 => (250*cos30, 250*sin30) = (216.506, 125). A and C clamp
+    // to the center.
+    let neg = curve_paths[0];
+    assert!(
+        neg.starts_with("M-0.000,-0.000") || neg.starts_with("M0.000,0.000"),
+        "negative A value should clamp to center, got {neg}"
+    );
+    assert!(
+        neg.contains("L216.506,125.000"),
+        "positive B value should scale normally, got {neg}"
+    );
+    for path in &curve_paths {
+        for point in path
+            .trim_start_matches('M')
+            .trim_end_matches(" Z")
+            .split(" L")
+        {
+            let (x, y) = point.split_once(',').expect("point format x,y");
+            let (x, y): (f32, f32) = (x.parse().unwrap(), y.parse().unwrap());
+            let r = (x * x + y * y).sqrt();
+            assert!(
+                r <= 300.0 + 0.01,
+                "curve point ({x},{y}) escapes the radar radius"
+            );
+        }
+    }
+}
+
+#[test]
+fn radar_all_negative_values_render_degenerate_center_polygon_without_panic() {
+    let input = r#"radar-beta
+  axis A, B, C
+  curve AllNeg {-3, -5, -1}
+"#;
+    let (graph, _layout, svg) = render(input);
+    assert_eq!(graph.kind, DiagramKind::Radar);
+    let path = svg
+        .split("<path d=\"")
+        .skip(1)
+        .find(|chunk| chunk.contains("fill-opacity=\"0.5\""))
+        .expect("curve should still render");
+    let d = path.split('"').next().unwrap();
+    for point in d.trim_start_matches('M').trim_end_matches(" Z").split(" L") {
+        let (x, y) = point.split_once(',').expect("point format x,y");
+        let (x, y): (f32, f32) = (x.parse().unwrap(), y.parse().unwrap());
+        assert!(
+            x.abs() < 0.001 && y.abs() < 0.001,
+            "all-negative curve should collapse to the center, got ({x},{y})"
+        );
+        assert!(x.is_finite() && y.is_finite(), "coordinates must be finite");
+    }
+}
+
+/// Radar `title` directive was parsed then silently discarded, and render_radar
+/// emitted an empty `<text></text>` placeholder. The title must appear in the
+/// SVG output and sit above the top axis label without colliding with it.
+#[test]
+fn radar_title_renders_above_top_axis_label() {
+    let input = "radar-beta\n  title Skill Assessment\n  axis A, B, C\n  curve Alpha {1,2,3}\n";
+    let (graph, _layout, svg) = render(input);
+    assert_eq!(graph.kind, DiagramKind::Radar);
+    assert_eq!(graph.radar_title.as_deref(), Some("Skill Assessment"));
+    assert!(
+        svg.contains(">Skill Assessment</text>"),
+        "radar title text should be rendered in the SVG output"
+    );
+    // No empty text placeholder should remain.
+    assert!(
+        !svg.contains("></text><text") || !svg.contains("<text x=\"0\" y=\"-3"),
+        "no empty placeholder title text expected"
+    );
+
+    // The title hangs downward from its y, the top axis label is centered on its y.
+    // Title bottom (y + font_size) must stay above the top axis label's top edge.
+    let title_y: f32 = svg
+        .split(">Skill Assessment</text>")
+        .next()
+        .unwrap()
+        .rsplit("<text x=\"0\" y=\"")
+        .next()
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .parse()
+        .expect("title y coordinate");
+    let axis_label_y: f32 = svg
+        .split(">A</text>")
+        .next()
+        .unwrap()
+        .rsplit(" y=\"")
+        .next()
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .parse()
+        .expect("top axis label y coordinate");
+    let title_font_size = 16.0; // Theme::modern().font_size
+    let axis_font_size = 12.0;
+    assert!(
+        title_y + title_font_size < axis_label_y - axis_font_size / 2.0,
+        "radar title (bottom {}) must not collide with top axis label (top {})",
+        title_y + title_font_size,
+        axis_label_y - axis_font_size / 2.0
+    );
+}
+
+/// A radar diagram without a title must not emit any empty title text element.
+#[test]
+fn radar_without_title_emits_no_empty_text_placeholder() {
+    let input = "radar-beta\n  axis A, B, C\n  curve Alpha {1,2,3}\n";
+    let (graph, _layout, svg) = render(input);
+    assert_eq!(graph.kind, DiagramKind::Radar);
+    assert!(graph.radar_title.is_none());
+    assert!(
+        !svg.contains("></text>") || !svg.contains("y=\"-350"),
+        "no empty title placeholder expected when there is no title"
+    );
+}
+
+/// Quoted radar titles should have their quotes stripped and XML escaped.
+#[test]
+fn radar_title_quoted_and_escaped() {
+    let input = "radar-beta\n  title \"Q1 <Goals> & Metrics\"\n  axis A, B\n  curve C {1,2}\n";
+    let (graph, _layout, svg) = render(input);
+    assert_eq!(graph.radar_title.as_deref(), Some("Q1 <Goals> & Metrics"));
+    assert!(
+        svg.contains("Q1 &lt;Goals&gt; &amp; Metrics"),
+        "radar title should be XML-escaped in SVG output"
+    );
+}
+
+#[test]
+fn radar_curve_with_fewer_values_than_axes_pads_missing_axes_at_center() {
+    // 5 axes, second curve provides only 3 values. Missing values must
+    // default to 0 (center of the chart) with no panic and one polygon
+    // point per axis (src/render.rs parse_series axis-fill unwrap_or(0.0)).
+    let input = r#"radar-beta
+  axis A, B, C, D, E
+  curve Full {5, 4, 3, 2, 1}
+  curve Short {2, 3, 4}
+"#;
+    let (graph, _layout, svg) = render(input);
+    assert_eq!(graph.kind, DiagramKind::Radar);
+
+    // Extract the radar curve polygons (paths with fill-opacity 0.5).
+    let curve_paths: Vec<Vec<(f32, f32)>> = svg
+        .split("<path d=\"")
+        .skip(1)
+        .filter(|chunk| chunk.contains("fill-opacity=\"0.5\""))
+        .map(|chunk| {
+            let d = chunk.split('"').next().expect("path d attribute");
+            d.trim_start_matches('M')
+                .trim_end_matches(" Z")
+                .split(" L")
+                .map(|pt| {
+                    let (x, y) = pt.split_once(',').expect("point should be x,y");
+                    (
+                        x.trim().parse::<f32>().expect("x coord"),
+                        y.trim().parse::<f32>().expect("y coord"),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    assert_eq!(curve_paths.len(), 2, "both curves should render a polygon");
+
+    let axis_count = 5usize;
+    for (idx, points) in curve_paths.iter().enumerate() {
+        assert_eq!(
+            points.len(),
+            axis_count,
+            "curve {idx} polygon must have one point per axis"
+        );
+    }
+
+    // Geometry: max value 5 maps to MAX_RADIUS 300, so scale = 60.
+    let scale = 300.0f32 / 5.0;
+    let step = 2.0 * std::f32::consts::PI / axis_count as f32;
+    let start = -std::f32::consts::PI / 2.0;
+    let expected_short = [2.0f32, 3.0, 4.0, 0.0, 0.0];
+    let short = &curve_paths[1];
+    for (idx, value) in expected_short.iter().enumerate() {
+        let angle = start + step * idx as f32;
+        let (ex, ey) = (value * scale * angle.cos(), value * scale * angle.sin());
+        let (x, y) = short[idx];
+        assert!(
+            (x - ex).abs() < 0.01 && (y - ey).abs() < 0.01,
+            "short curve point {idx} should be at ({ex:.3},{ey:.3}) got ({x:.3},{y:.3})"
+        );
+    }
+    // Missing axes (D, E) sit exactly at the center radius.
+    for idx in 3..5 {
+        let (x, y) = short[idx];
+        assert!(
+            x.abs() < 0.001 && y.abs() < 0.001,
+            "missing axis {idx} should default to value 0 at the center, got ({x},{y})"
+        );
+    }
+}
+
+#[test]
+fn radar_curve_with_more_values_than_axes_ignores_extras() {
+    // Extra values beyond the axis list get numeric-only label lines that
+    // fail the axis lookup, so they must not distort the polygon.
+    let input = r#"radar-beta
+  axis A, B, C
+  curve Over {1, 2, 3, 4, 5}
+"#;
+    let (graph, _layout, svg) = render(input);
+    assert_eq!(graph.kind, DiagramKind::Radar);
+    let polygon = svg
+        .split("<path d=\"")
+        .skip(1)
+        .find(|chunk| chunk.contains("fill-opacity=\"0.5\""))
+        .expect("curve polygon should render");
+    let d = polygon.split('"').next().unwrap();
+    let point_count = d
+        .trim_start_matches('M')
+        .trim_end_matches(" Z")
+        .split(" L")
+        .count();
+    assert_eq!(
+        point_count, 3,
+        "curve polygon must have exactly one point per axis even with extra values"
+    );
+}

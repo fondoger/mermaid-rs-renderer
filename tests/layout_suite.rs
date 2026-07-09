@@ -381,12 +381,14 @@ fn render_all_fixtures() {
         "quadrant/basic.mmd",
         "radar/basic.mmd",
         "radar/negative.mmd",
+        "radar/short_curve.mmd",
         "requirement/basic.mmd",
         "sankey/basic.mmd",
         "sequence/basic.mmd",
         "sequence/frames.mmd",
         "state/basic.mmd",
         "state/note.mmd",
+        "state/note_block.mmd",
         "timeline/basic.mmd",
         "treemap/basic.mmd",
         "xychart/basic.mmd",
@@ -1138,4 +1140,67 @@ fn architecture_edges_route_from_declared_ports() {
             cb.points
         );
     }
+}
+
+#[test]
+fn state_block_note_renders_multiline_text() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let path = root.join("state/note_block.mmd");
+    let (layout, svg) = render_fixture(&path);
+
+    let DiagramData::Graph { state_notes } = &layout.diagram else {
+        panic!("state/note_block.mmd: expected graph diagram data");
+    };
+    assert_eq!(
+        state_notes.len(),
+        2,
+        "expected both block notes (right + left) in layout"
+    );
+
+    let right = state_notes
+        .iter()
+        .find(|note| note.position == mermaid_rs_renderer::StateNotePosition::RightOf)
+        .expect("right-of block note missing");
+    assert_eq!(right.target, "Comp");
+    assert!(
+        right.label.lines.len() >= 2,
+        "block note body should preserve line breaks, got {:?}",
+        right.label.lines
+    );
+
+    let left = state_notes
+        .iter()
+        .find(|note| note.position == mermaid_rs_renderer::StateNotePosition::LeftOf)
+        .expect("left-of block note missing");
+    assert_eq!(left.target, "Comp");
+
+    // Composite target: the note should sit beside the composite subgraph.
+    let comp = layout
+        .subgraphs
+        .iter()
+        .find(|sub| sub.label == "Comp")
+        .expect("composite subgraph Comp missing");
+    assert!(
+        right.x >= comp.x + comp.width - 1.0,
+        "right note should be to the right of composite: note.x={} comp right={}",
+        right.x,
+        comp.x + comp.width
+    );
+    assert!(
+        left.x + left.width <= comp.x + 1.0,
+        "left note should be to the left of composite: note right={} comp.x={}",
+        left.x + left.width,
+        comp.x
+    );
+
+    // Note text is emitted in the SVG.
+    assert!(svg.contains("Block note body"), "note text missing from svg");
+    assert!(
+        svg.contains("with a second line"),
+        "second note line missing from svg"
+    );
+    assert!(
+        svg.contains("Left side note"),
+        "left note text missing from svg"
+    );
 }
