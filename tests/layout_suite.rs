@@ -420,6 +420,234 @@ fn render_all_fixtures() {
     }
 }
 
+/// Issue #129: peer branches from a TD decision must fan through the lower
+/// diamond sides instead of sharing the bottom apex and hooking sideways.
+#[test]
+fn decision_branches_use_lower_sides_independent_of_declaration_order() {
+    fn assert_branch_ports(input: &str, decision_id: &str, target_ids: [&str; 2]) {
+        let parsed = parse_mermaid(input).expect("parse failed");
+        let theme = Theme::modern();
+        let config = LayoutConfig::default();
+        let layout = compute_layout(&parsed.graph, &theme, &config);
+        let decision = layout
+            .nodes
+            .get(decision_id)
+            .unwrap_or_else(|| panic!("decision node {decision_id}"));
+        let decision_cx = decision.x + decision.width * 0.5;
+        let decision_cy = decision.y + decision.height * 0.5;
+        let mut starts = Vec::new();
+
+        for target_id in target_ids {
+            let target = layout.nodes.get(target_id).expect("branch target");
+            let target_cx = target.x + target.width * 0.5;
+            let edge = layout
+                .edges
+                .iter()
+                .find(|edge| edge.from == decision_id && edge.to == target_id)
+                .expect("decision branch edge");
+            let first = *edge.points.first().expect("branch start point");
+            let last = *edge.points.last().expect("branch end point");
+            let normalized_boundary_distance = (first.0 - decision_cx).abs()
+                / (decision.width * 0.5)
+                + (first.1 - decision_cy).abs() / (decision.height * 0.5);
+            let below_center_fraction = (first.1 - decision_cy) / (decision.height * 0.5);
+            let exits_toward_target = (target_cx < decision_cx && first.0 < decision_cx)
+                || (target_cx > decision_cx && first.0 > decision_cx);
+
+            assert!(
+                (normalized_boundary_distance - 1.0).abs() <= 0.03
+                    && (0.14..=0.85).contains(&below_center_fraction)
+                    && exits_toward_target,
+                "{decision_id}->{target_id} should leave through the lower diamond slant toward its target, never a side vertex or bottom apex; got {first:?} for decision {decision:?}"
+            );
+            assert!(
+                (last.1 - target.y).abs() <= 0.5 && (last.0 - target_cx).abs() <= 5.0,
+                "{decision_id}->{target_id} should enter near the target's top center, got {last:?} for target {target:?}"
+            );
+            assert!(
+                edge.points
+                    .windows(2)
+                    .all(|segment| segment[1].1 + 0.5 >= segment[0].1),
+                "{decision_id}->{target_id} should be y-monotone, got {:?}",
+                edge.points
+            );
+            starts.push(first);
+        }
+
+        assert_eq!(starts.len(), 2);
+        assert!(
+            ((starts[0].0 - decision_cx) + (starts[1].0 - decision_cx)).abs() <= 2.0
+                && (starts[0].1 - starts[1].1).abs() <= 1.0,
+            "peer branches should leave the diamond symmetrically, got {starts:?}"
+        );
+    }
+
+    for input in [
+        r#"flowchart TD
+C{Decision}
+C -->|One| D[Result one]
+C -->|Two| E[Result two]
+"#,
+        r#"flowchart TD
+C{Decision}
+C -->|Two| E[Result two]
+C -->|One| D[Result one]
+"#,
+    ] {
+        assert_branch_ports(input, "C", ["D", "E"]);
+    }
+
+    let screenshot_repro = r#"flowchart TD
+A[Hard edge] -->|Link text| B(Round edge)
+B --> C{Decision}
+C -->|One| D[Result one]
+C -->|Two| E[Result two]
+E --> F{Let me think}
+F -->|Yes| G[G]
+F -->|No| H[H]
+"#;
+    assert_branch_ports(screenshot_repro, "C", ["D", "E"]);
+    assert_branch_ports(screenshot_repro, "F", ["G", "H"]);
+}
+
+/// Issues #122 and #123: aligned downstream targets must not make decision
+/// routing depend on declaration order or spacing overrides.
+#[test]
+fn aligned_decision_branches_avoid_apex_hooks_independent_of_order_and_spacing() {
+    fn assert_branch_ports(input: &str, config: &LayoutConfig) {
+        let parsed = parse_mermaid(input).expect("parse failed");
+        let theme = Theme::modern();
+        let layout = compute_layout(&parsed.graph, &theme, config);
+        let decision = layout.nodes.get("drawn").expect("decision node drawn");
+        let decision_cx = decision.x + decision.width * 0.5;
+        let decision_cy = decision.y + decision.height * 0.5;
+        let mut left_exits = 0usize;
+        let mut right_exits = 0usize;
+
+        for target_id in ["ai", "createDraft"] {
+            let target = layout.nodes.get(target_id).expect("branch target");
+            let edge = layout
+                .edges
+                .iter()
+                .find(|edge| edge.from == "drawn" && edge.to == target_id)
+                .expect("decision branch edge");
+            let first = *edge.points.first().expect("branch start point");
+            let second = *edge.points.get(1).expect("branch start stub");
+            let penultimate = *edge
+                .points
+                .get(edge.points.len().saturating_sub(2))
+                .expect("branch end stub");
+            let last = *edge.points.last().expect("branch end point");
+            let normalized_boundary_distance = (first.0 - decision_cx).abs()
+                / (decision.width * 0.5)
+                + (first.1 - decision_cy).abs() / (decision.height * 0.5);
+            let exits_left = first.0 < decision_cx - 2.0;
+            let exits_right = first.0 > decision_cx + 2.0;
+            left_exits += usize::from(exits_left);
+            right_exits += usize::from(exits_right);
+
+            assert!(
+                (normalized_boundary_distance - 1.0).abs() <= 0.03
+                    && first.1 >= decision_cy - 0.5
+                    && decision.y + decision.height - first.1 > 2.0
+                    && (exits_left || exits_right),
+                "drawn->{target_id} should leave through a lower decision side, never the bottom apex; got {first:?} for decision {decision:?}"
+            );
+            assert!(
+                (second.1 - first.1).abs() <= 0.5
+                    && ((exits_left && second.0 < first.0) || (exits_right && second.0 > first.0)),
+                "drawn->{target_id} should start with an outward horizontal stub, got {first:?} -> {second:?}"
+            );
+            assert!(
+                (last.1 - target.y).abs() <= 0.5
+                    && last.0 >= target.x - 0.5
+                    && last.0 <= target.x + target.width + 0.5,
+                "drawn->{target_id} should enter the target through its top border, got {last:?} for target {target:?}"
+            );
+            assert!(
+                (penultimate.0 - last.0).abs() <= 0.5 && penultimate.1 < last.1,
+                "drawn->{target_id} should finish with a downward vertical stub, got {penultimate:?} -> {last:?}"
+            );
+        }
+        assert_eq!(
+            (left_exits, right_exits),
+            (1, 1),
+            "the two aligned decision branches should fan through opposite sides"
+        );
+
+        let improve = layout.nodes.get("improve").expect("decision node improve");
+        let forward = layout
+            .edges
+            .iter()
+            .find(|edge| edge.from == "improve" && edge.to == "e")
+            .expect("single forward decision branch");
+        let first = *forward.points.first().expect("forward branch start");
+        assert!(
+            (first.0 - (improve.x + improve.width * 0.5)).abs() <= 0.5
+                && (first.1 - (improve.y + improve.height)).abs() <= 0.5,
+            "a decision with only one forward branch should keep its bottom-apex exit, got {first:?} for improve {improve:?}"
+        );
+    }
+
+    let inputs = [
+        r#"flowchart TD
+start(Need flowchart) --> drawn{Have a<br>drawing or<br>draft flowchart?}
+drawn -->|Yes| ai[Provide to AI<br>and create flowchart]
+drawn -->|No| createDraft[Make a draft]
+createDraft --> ai
+
+ai --> improve{Needs<br>improvement?}
+improve -->|Yes| drawn
+improve -->|No| e(End)
+"#,
+        r#"flowchart TD
+start(Need flowchart) --> drawn{Have a<br>drawing or<br>draft flowchart?}
+drawn -->|No| createDraft[Make a draft]
+drawn -->|Yes| ai[Provide to AI<br>and create flowchart]
+createDraft --> ai
+
+ai --> improve{Needs<br>improvement?}
+improve -->|Yes| drawn
+improve -->|No| e(End)
+"#,
+    ];
+    let spaced = LayoutConfig {
+        node_spacing: 100.0,
+        rank_spacing: 80.0,
+        ..LayoutConfig::default()
+    };
+
+    for input in inputs {
+        assert_branch_ports(input, &LayoutConfig::default());
+        assert_branch_ports(input, &spaced);
+    }
+
+    let parsed = parse_mermaid(
+        r#"flowchart TD
+C{Decision}
+C --> D[Only target]
+C --> D
+"#,
+    )
+    .expect("parse duplicate-edge case");
+    let layout = compute_layout(&parsed.graph, &Theme::modern(), &LayoutConfig::default());
+    let decision = layout.nodes.get("C").expect("decision node C");
+    let duplicate_edges: Vec<_> = layout
+        .edges
+        .iter()
+        .filter(|edge| edge.from == "C" && edge.to == "D")
+        .collect();
+    assert_eq!(duplicate_edges.len(), 2, "expected two parallel edges");
+    for edge in duplicate_edges {
+        let first = edge.points.first().expect("duplicate branch start");
+        assert!(
+            (first.0 - (decision.x + decision.width * 0.5)).abs() <= 0.5
+                && (first.1 - (decision.y + decision.height)).abs() <= 0.5,
+            "parallel edges to one target should not count as a multi-target fan; got {first:?}"
+        );
+    }
+}
+
 #[test]
 fn timeline_event_descriptions_wrap_inside_cards() {
     let input = r#"timeline
