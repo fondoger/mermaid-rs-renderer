@@ -782,12 +782,15 @@ pub struct LayoutConfig {
 /// `Current` preserves the renderer's existing placement behavior. `Dagre`
 /// enables the experimental Dagre-style pipeline while keeping the same
 /// downstream port assignment, routing, label placement, and rendering code.
+/// `Auto` runs both placement engines and selects the Dagre result only when
+/// its deterministic pre-routing metrics satisfy the guarded Pareto policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum FlowchartLayoutEngine {
     #[default]
     Current,
     Dagre,
+    Auto,
 }
 
 impl FlowchartLayoutEngine {
@@ -795,6 +798,7 @@ impl FlowchartLayoutEngine {
         match self {
             Self::Current => "current",
             Self::Dagre => "dagre",
+            Self::Auto => "auto",
         }
     }
 }
@@ -3165,6 +3169,7 @@ pub fn merge_init_config(mut config: Config, init: serde_json::Value) -> Config 
             config.layout.flowchart.engine = match val.to_ascii_lowercase().as_str() {
                 "current" => FlowchartLayoutEngine::Current,
                 "dagre" => FlowchartLayoutEngine::Dagre,
+                "auto" => FlowchartLayoutEngine::Auto,
                 _ => config.layout.flowchart.engine,
             };
         }

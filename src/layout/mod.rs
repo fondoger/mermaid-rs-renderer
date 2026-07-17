@@ -29,8 +29,8 @@ use block::*;
 use c4::*;
 use error::*;
 pub use flowchart::layered_engine::{
-    LayeredEdgeSnapshot, LayeredFeedbackEdgeSnapshot, LayeredLayoutSnapshot, LayeredNodeSnapshot,
-    LayeredRankSnapshot, write_layered_layout_dump,
+    LayeredEdgeSnapshot, LayeredFeedbackEdgeSnapshot, LayeredLayoutMetrics, LayeredLayoutSnapshot,
+    LayeredNodeSnapshot, LayeredRankSnapshot, write_layered_layout_dump,
 };
 use gantt::*;
 use gitgraph::*;
@@ -55,7 +55,7 @@ use treemap::*;
 pub use types::*;
 use xychart::*;
 
-use crate::config::{LayoutConfig, PieRenderMode, TreemapRenderMode};
+use crate::config::{FlowchartLayoutEngine, LayoutConfig, PieRenderMode, TreemapRenderMode};
 use crate::ir::{Direction, Graph};
 use crate::text_metrics;
 use crate::theme::{Theme, adjust_color, parse_color_to_hsl};
@@ -617,28 +617,110 @@ fn compute_flowchart_layout(
 
     let mut label_dummy_ids: Vec<Option<String>> = vec![None; graph.edges.len()];
     let layered_layout_started = Instant::now();
-    let rank_info = flowchart::manual_layout::assign_positions_manual(
-        graph,
-        &layout_node_ids,
-        &layout_set,
-        &mut nodes,
-        config,
-        &layout_edges,
-        theme,
-        &edge_route_labels,
-        &mut label_dummy_ids,
-    );
-    if let Some(metrics) = stage_metrics.as_deref_mut() {
-        metrics.layered_layout_us = layered_layout_started.elapsed().as_micros();
-        metrics.layered_layout = Some(
-            flowchart::layered_engine::LayeredLayoutSnapshot::from_stage(
-                config.flowchart.engine,
+    let (rank_info, layered_snapshot) = match config.flowchart.engine {
+        FlowchartLayoutEngine::Current => {
+            let rank_info = flowchart::manual_layout::assign_positions_manual(
+                graph,
+                &layout_node_ids,
+                &layout_set,
+                &mut nodes,
+                config,
+                &layout_edges,
+                theme,
+                &edge_route_labels,
+                &mut label_dummy_ids,
+            );
+            let snapshot = flowchart::layered_engine::LayeredLayoutSnapshot::from_stage(
+                FlowchartLayoutEngine::Current,
+                FlowchartLayoutEngine::Current,
                 graph.direction,
                 &nodes,
                 &layout_edges,
                 &rank_info,
-            ),
-        );
+            );
+            (rank_info, snapshot)
+        }
+        FlowchartLayoutEngine::Dagre => {
+            let rank_info = flowchart::manual_layout::assign_positions_manual(
+                graph,
+                &layout_node_ids,
+                &layout_set,
+                &mut nodes,
+                config,
+                &layout_edges,
+                theme,
+                &edge_route_labels,
+                &mut label_dummy_ids,
+            );
+            let snapshot = flowchart::layered_engine::LayeredLayoutSnapshot::from_stage(
+                FlowchartLayoutEngine::Dagre,
+                FlowchartLayoutEngine::Dagre,
+                graph.direction,
+                &nodes,
+                &layout_edges,
+                &rank_info,
+            );
+            (rank_info, snapshot)
+        }
+        FlowchartLayoutEngine::Auto => {
+            let mut current_nodes = nodes.clone();
+            let mut current_label_dummy_ids = vec![None; graph.edges.len()];
+            let mut current_config = config.clone();
+            current_config.flowchart.engine = FlowchartLayoutEngine::Current;
+            let current_rank_info = flowchart::manual_layout::assign_positions_manual(
+                graph,
+                &layout_node_ids,
+                &layout_set,
+                &mut current_nodes,
+                &current_config,
+                &layout_edges,
+                theme,
+                &edge_route_labels,
+                &mut current_label_dummy_ids,
+            );
+            let current_snapshot = flowchart::layered_engine::LayeredLayoutSnapshot::from_stage(
+                FlowchartLayoutEngine::Auto,
+                FlowchartLayoutEngine::Current,
+                graph.direction,
+                &current_nodes,
+                &layout_edges,
+                &current_rank_info,
+            );
+
+            let candidate_rank_info = flowchart::manual_layout::assign_positions_manual(
+                graph,
+                &layout_node_ids,
+                &layout_set,
+                &mut nodes,
+                config,
+                &layout_edges,
+                theme,
+                &edge_route_labels,
+                &mut label_dummy_ids,
+            );
+            let candidate_snapshot = flowchart::layered_engine::LayeredLayoutSnapshot::from_stage(
+                FlowchartLayoutEngine::Auto,
+                FlowchartLayoutEngine::Dagre,
+                graph.direction,
+                &nodes,
+                &layout_edges,
+                &candidate_rank_info,
+            );
+            if flowchart::layered_engine::candidate_preferred(
+                &current_snapshot,
+                &candidate_snapshot,
+            ) {
+                (candidate_rank_info, candidate_snapshot)
+            } else {
+                nodes = current_nodes;
+                label_dummy_ids = current_label_dummy_ids;
+                (current_rank_info, current_snapshot)
+            }
+        }
+    };
+    if let Some(metrics) = stage_metrics.as_deref_mut() {
+        metrics.layered_layout_us = layered_layout_started.elapsed().as_micros();
+        metrics.layered_layout = Some(layered_snapshot);
     }
 
     // Opt-in aspect-ratio goal: fold over-wide flowcharts into serpentine

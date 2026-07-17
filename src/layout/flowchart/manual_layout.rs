@@ -1,12 +1,15 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::config::LayoutConfig;
+use crate::config::{FlowchartLayoutEngine, LayoutConfig};
 use crate::ir::{DiagramKind, Graph};
 use crate::theme::Theme;
 
 use super::super::label_placement;
-use super::super::ranking::{compute_ranks_subset, order_rank_nodes, rank_edges_for_manual_layout};
+use super::super::ranking::{
+    compute_ranks_dagre_style, compute_ranks_subset, order_rank_nodes,
+    order_rank_nodes_dagre_style, rank_edges_for_manual_layout,
+};
 use super::super::{NodeLayout, TextBlock, is_horizontal};
 use super::analysis::FlowchartRelationshipAnalysis;
 
@@ -245,6 +248,83 @@ fn build_ordering_edges(
     ordering_edges
 }
 
+/// Balance whole-rank offsets toward adjacent-rank neighbors without changing
+/// within-rank order or spacing. This is a conservative Brandes-Kopf-inspired
+/// coordinate refinement: ranks translate as rigid blocks, so it can improve
+/// alignment and centerline length without introducing node overlap.
+fn balance_rank_cross_offsets(
+    rank_nodes: &[Vec<String>],
+    ordering_edges: &[crate::ir::Edge],
+    nodes: &mut BTreeMap<String, NodeLayout>,
+    direction: crate::ir::Direction,
+    node_spacing: f32,
+    passes: usize,
+) {
+    if rank_nodes.len() <= 1 {
+        return;
+    }
+    let mut rank_by_id = HashMap::new();
+    for (rank, bucket) in rank_nodes.iter().enumerate() {
+        for id in bucket {
+            rank_by_id.insert(id.as_str(), rank);
+        }
+    }
+    let cross_center = |node: &NodeLayout| {
+        if is_horizontal(direction) {
+            node.y + node.height / 2.0
+        } else {
+            node.x + node.width / 2.0
+        }
+    };
+    let max_shift = (node_spacing * 1.5).max(12.0);
+    for pass in 0..passes.max(2) {
+        let ranks: Vec<usize> = if pass % 2 == 0 {
+            (1..rank_nodes.len()).collect()
+        } else {
+            (1..rank_nodes.len()).rev().collect()
+        };
+        for rank in ranks {
+            let mut deltas = Vec::new();
+            for edge in ordering_edges {
+                let Some(&from_rank) = rank_by_id.get(edge.from.as_str()) else {
+                    continue;
+                };
+                let Some(&to_rank) = rank_by_id.get(edge.to.as_str()) else {
+                    continue;
+                };
+                if from_rank == to_rank {
+                    continue;
+                }
+                if from_rank == rank {
+                    if let (Some(from), Some(to)) = (nodes.get(&edge.from), nodes.get(&edge.to)) {
+                        deltas.push(cross_center(to) - cross_center(from));
+                    }
+                } else if to_rank == rank
+                    && let (Some(from), Some(to)) = (nodes.get(&edge.from), nodes.get(&edge.to))
+                {
+                    deltas.push(cross_center(from) - cross_center(to));
+                }
+            }
+            let Some(desired_shift) = median_center(&mut deltas) else {
+                continue;
+            };
+            let shift = (desired_shift * 0.5).clamp(-max_shift, max_shift);
+            if shift.abs() <= 1e-3 {
+                continue;
+            }
+            for id in &rank_nodes[rank] {
+                if let Some(node) = nodes.get_mut(id) {
+                    if is_horizontal(direction) {
+                        node.y += shift;
+                    } else {
+                        node.x += shift;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Ordered rank buckets produced by [`assign_positions_manual`], exposed so
 /// later passes (e.g. the aspect-ratio band fold) can reuse the exact rank
 /// structure instead of re-deriving it.
@@ -284,7 +364,15 @@ pub(in crate::layout) fn assign_positions_manual(
         .collect();
     let edge_labels = edge_labels_vec;
     let rank_edges = rank_edges_for_manual_layout(graph, layout_node_ids, &layout_edges);
-    let mut ranks = compute_ranks_subset(layout_node_ids, &rank_edges, &graph.node_order);
+    let (mut ranks, mut engine_feedback_edges) = match config.flowchart.engine {
+        FlowchartLayoutEngine::Current => (
+            compute_ranks_subset(layout_node_ids, &rank_edges, &graph.node_order),
+            Vec::new(),
+        ),
+        FlowchartLayoutEngine::Dagre | FlowchartLayoutEngine::Auto => {
+            compute_ranks_dagre_style(layout_node_ids, &rank_edges, &graph.node_order)
+        }
+    };
     let relationship_analysis = FlowchartRelationshipAnalysis::analyze(
         graph,
         layout_node_ids,
@@ -542,12 +630,20 @@ pub(in crate::layout) fn assign_positions_manual(
     for bucket in &mut rank_nodes {
         bucket.sort_by_key(|id| order_map.get(id).copied().unwrap_or(usize::MAX));
     }
-    order_rank_nodes(
-        &mut rank_nodes,
-        &ordering_edges,
-        &order_map,
-        config.flowchart.order_passes,
-    );
+    match config.flowchart.engine {
+        FlowchartLayoutEngine::Current => order_rank_nodes(
+            &mut rank_nodes,
+            &ordering_edges,
+            &order_map,
+            config.flowchart.order_passes,
+        ),
+        FlowchartLayoutEngine::Dagre | FlowchartLayoutEngine::Auto => order_rank_nodes_dagre_style(
+            &mut rank_nodes,
+            &ordering_edges,
+            &order_map,
+            config.flowchart.order_passes,
+        ),
+    }
 
     let mut main_cursor = 0.0;
     for (rank_idx, bucket) in rank_nodes.iter().enumerate() {
@@ -730,23 +826,35 @@ pub(in crate::layout) fn assign_positions_manual(
             place_rank(rank_idx, false, nodes);
         }
     }
+    if matches!(
+        config.flowchart.engine,
+        FlowchartLayoutEngine::Dagre | FlowchartLayoutEngine::Auto
+    ) {
+        balance_rank_cross_offsets(
+            &rank_nodes,
+            &ordering_edges,
+            nodes,
+            graph.direction,
+            config.node_spacing,
+            config.flowchart.order_passes,
+        );
+    }
     let mut rank_by_id: HashMap<&str, usize> = HashMap::new();
     for (rank, bucket) in rank_nodes.iter().enumerate() {
         for id in bucket {
             rank_by_id.insert(id.as_str(), rank);
         }
     }
-    let feedback_edges = layout_edges
-        .iter()
-        .filter_map(|edge| {
-            let from_rank = rank_by_id.get(edge.from.as_str())?;
-            let to_rank = rank_by_id.get(edge.to.as_str())?;
-            (*to_rank <= *from_rank).then(|| (edge.from.clone(), edge.to.clone()))
-        })
-        .collect();
+    engine_feedback_edges.extend(layout_edges.iter().filter_map(|edge| {
+        let from_rank = rank_by_id.get(edge.from.as_str())?;
+        let to_rank = rank_by_id.get(edge.to.as_str())?;
+        (*to_rank <= *from_rank).then(|| (edge.from.clone(), edge.to.clone()))
+    }));
+    engine_feedback_edges.sort();
+    engine_feedback_edges.dedup();
     ManualLayoutRanks {
         rank_nodes,
-        feedback_edges,
+        feedback_edges: engine_feedback_edges,
     }
 }
 
@@ -801,6 +909,36 @@ mod tests {
             end_decoration: None,
             style: crate::ir::EdgeStyle::Solid,
         }
+    }
+
+    #[test]
+    fn dagre_balance_translates_rank_toward_neighbors_without_changing_spacing() {
+        let mut nodes = BTreeMap::new();
+        let mut a = make_node_layout("A");
+        a.x = 0.0;
+        let mut b = make_node_layout("B");
+        b.x = 120.0;
+        let mut c = make_node_layout("C");
+        c.x = 230.0;
+        nodes.insert("A".into(), a);
+        nodes.insert("B".into(), b);
+        nodes.insert("C".into(), c);
+        let ranks = vec![vec!["A".into()], vec!["B".into(), "C".into()]];
+        let edges = vec![make_edge("A", "B", None)];
+        let before_gap = nodes["C"].x - nodes["B"].x;
+        let before_alignment = (nodes["B"].x - nodes["A"].x).abs();
+
+        balance_rank_cross_offsets(
+            &ranks,
+            &edges,
+            &mut nodes,
+            crate::ir::Direction::TopDown,
+            50.0,
+            4,
+        );
+
+        assert!((nodes["C"].x - nodes["B"].x - before_gap).abs() < 1e-4);
+        assert!((nodes["B"].x - nodes["A"].x).abs() < before_alignment);
     }
 
     #[test]

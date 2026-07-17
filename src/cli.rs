@@ -64,7 +64,7 @@ pub struct Args {
     #[arg(long = "dumpLayout")]
     pub dump_layout: Option<PathBuf>,
 
-    /// Layered flowchart placement engine (`current` or experimental `dagre`)
+    /// Layered flowchart placement engine (`current`, `dagre`, or guarded `auto`)
     #[arg(long = "layoutEngine", value_enum)]
     pub layout_engine: Option<LayoutEngineArg>,
 
@@ -95,6 +95,7 @@ pub enum OutputFormat {
 pub enum LayoutEngineArg {
     Current,
     Dagre,
+    Auto,
 }
 
 impl From<LayoutEngineArg> for FlowchartLayoutEngine {
@@ -102,6 +103,7 @@ impl From<LayoutEngineArg> for FlowchartLayoutEngine {
         match value {
             LayoutEngineArg::Current => Self::Current,
             LayoutEngineArg::Dagre => Self::Dagre,
+            LayoutEngineArg::Auto => Self::Auto,
         }
     }
 }
@@ -174,6 +176,9 @@ pub fn run() -> Result<()> {
         let mut config = base_config.clone();
         if let Some(init_cfg) = parsed.init_config {
             config = merge_init_config(config, init_cfg);
+        }
+        if let Some(engine) = args.layout_engine {
+            config.layout.flowchart.engine = engine.into();
         }
 
         let t_layout_start = std::time::Instant::now();
@@ -252,6 +257,9 @@ pub fn run() -> Result<()> {
             if let Some(init_cfg) = parsed.init_config.clone() {
                 config = merge_init_config(config, init_cfg);
             }
+            if let Some(engine) = args.layout_engine {
+                config.layout.flowchart.engine = engine.into();
+            }
             let (layout, layout_stages) =
                 compute_layout_with_metrics(&parsed.graph, &config.theme, &config.layout);
             if let Some(outputs) = layered_layout_outputs.as_ref()
@@ -281,6 +289,9 @@ pub fn run() -> Result<()> {
         let mut config = base_config.clone();
         if let Some(init_cfg) = parsed.init_config.clone() {
             config = merge_init_config(config, init_cfg);
+        }
+        if let Some(engine) = args.layout_engine {
+            config.layout.flowchart.engine = engine.into();
         }
         let (layout, layout_stages) =
             compute_layout_with_metrics(&parsed.graph, &config.theme, &config.layout);
@@ -535,6 +546,12 @@ sequenceDiagram
             args.dump_layered_layout.as_deref(),
             Some(Path::new("stage.json"))
         );
+    }
+
+    #[test]
+    fn parses_guarded_auto_layout_engine() {
+        let args = Args::try_parse_from(["mmdr", "--layoutEngine", "auto"]).unwrap();
+        assert!(matches!(args.layout_engine, Some(LayoutEngineArg::Auto)));
     }
 
     #[test]

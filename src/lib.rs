@@ -112,9 +112,10 @@ pub use ir::{
     SequenceActivationKind, SequenceBox, StateNote, StateNotePosition, Subgraph,
 };
 pub use layout::{
-    EdgeLayout, LayeredEdgeSnapshot, LayeredFeedbackEdgeSnapshot, LayeredLayoutSnapshot,
-    LayeredNodeSnapshot, LayeredRankSnapshot, Layout, LayoutStageMetrics, NodeLayout,
-    SubgraphLayout, compute_layout, compute_layout_with_metrics, write_layered_layout_dump,
+    EdgeLayout, LayeredEdgeSnapshot, LayeredFeedbackEdgeSnapshot, LayeredLayoutMetrics,
+    LayeredLayoutSnapshot, LayeredNodeSnapshot, LayeredRankSnapshot, Layout, LayoutStageMetrics,
+    NodeLayout, SubgraphLayout, compute_layout, compute_layout_with_metrics,
+    write_layered_layout_dump,
 };
 pub use parser::{ParseOutput, parse_mermaid};
 #[cfg(feature = "png")]

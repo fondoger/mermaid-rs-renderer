@@ -120,6 +120,155 @@ pub(super) fn order_rank_nodes(
     }
 }
 
+/// Alternating median sweeps with Dagre-style bias changes and explicit
+/// retention of the best crossing count seen during the search.
+pub(super) fn order_rank_nodes_dagre_style(
+    rank_nodes: &mut [Vec<String>],
+    edges: &[crate::ir::Edge],
+    node_order: &HashMap<String, usize>,
+    passes: usize,
+) {
+    if rank_nodes.len() <= 1 {
+        return;
+    }
+    let mut incoming: HashMap<String, Vec<String>> = HashMap::new();
+    let mut outgoing: HashMap<String, Vec<String>> = HashMap::new();
+    for edge in edges {
+        outgoing
+            .entry(edge.from.clone())
+            .or_default()
+            .push(edge.to.clone());
+        incoming
+            .entry(edge.to.clone())
+            .or_default()
+            .push(edge.from.clone());
+    }
+
+    let mut work = rank_nodes.to_vec();
+    let mut best = work.clone();
+    let mut best_crossings = adjacent_rank_crossing_count(&best, edges);
+    let mut positions = HashMap::new();
+    let update_positions = |layers: &[Vec<String>], positions: &mut HashMap<String, usize>| {
+        positions.clear();
+        for bucket in layers {
+            for (index, id) in bucket.iter().enumerate() {
+                positions.insert(id.clone(), index);
+            }
+        }
+    };
+    update_positions(&work, &mut positions);
+
+    let sweep_count = passes.max(4) * 2;
+    let mut since_improvement = 0usize;
+    for sweep in 0..sweep_count {
+        let downward = sweep % 2 == 0;
+        let bias_right = sweep % 4 >= 2;
+        let neighbors = if downward { &incoming } else { &outgoing };
+        let ranks: Vec<usize> = if downward {
+            (1..work.len()).collect()
+        } else {
+            (0..work.len().saturating_sub(1)).rev().collect()
+        };
+        for rank in ranks {
+            if work[rank].len() <= 1 {
+                continue;
+            }
+            let current_positions = work[rank]
+                .iter()
+                .enumerate()
+                .map(|(index, id)| (id.clone(), index))
+                .collect::<HashMap<_, _>>();
+            work[rank].sort_by(|a, b| {
+                let a_score = median_position(a, neighbors, &positions, &current_positions);
+                let b_score = median_position(b, neighbors, &positions, &current_positions);
+                match a_score.partial_cmp(&b_score) {
+                    Some(std::cmp::Ordering::Equal) | None => {
+                        let a_pos = current_positions.get(a).copied().unwrap_or(0);
+                        let b_pos = current_positions.get(b).copied().unwrap_or(0);
+                        let biased = if bias_right {
+                            b_pos.cmp(&a_pos)
+                        } else {
+                            a_pos.cmp(&b_pos)
+                        };
+                        biased.then_with(|| {
+                            node_order
+                                .get(a)
+                                .copied()
+                                .unwrap_or(usize::MAX)
+                                .cmp(&node_order.get(b).copied().unwrap_or(usize::MAX))
+                        })
+                    }
+                    Some(ordering) => ordering,
+                }
+            });
+            transpose_bucket(&mut work[rank], neighbors, &positions, node_order);
+            update_positions(&work, &mut positions);
+        }
+
+        let crossings = adjacent_rank_crossing_count(&work, edges);
+        if crossings < best_crossings {
+            best_crossings = crossings;
+            best.clone_from(&work);
+            since_improvement = 0;
+        } else {
+            since_improvement += 1;
+            if crossings == best_crossings && work < best {
+                best.clone_from(&work);
+            }
+        }
+        if since_improvement >= 4 {
+            break;
+        }
+    }
+    rank_nodes.clone_from_slice(&best);
+}
+
+pub(super) fn adjacent_rank_crossing_count(
+    rank_nodes: &[Vec<String>],
+    edges: &[crate::ir::Edge],
+) -> usize {
+    let mut positions: HashMap<&str, (usize, usize)> = HashMap::new();
+    for (rank, bucket) in rank_nodes.iter().enumerate() {
+        for (order, id) in bucket.iter().enumerate() {
+            positions.insert(id.as_str(), (rank, order));
+        }
+    }
+    let mut by_gap: HashMap<usize, Vec<(&str, &str, usize, usize)>> = HashMap::new();
+    for edge in edges {
+        let Some(&(from_rank, from_order)) = positions.get(edge.from.as_str()) else {
+            continue;
+        };
+        let Some(&(to_rank, to_order)) = positions.get(edge.to.as_str()) else {
+            continue;
+        };
+        if to_rank != from_rank + 1 {
+            continue;
+        }
+        by_gap.entry(from_rank).or_default().push((
+            edge.from.as_str(),
+            edge.to.as_str(),
+            from_order,
+            to_order,
+        ));
+    }
+    let mut crossings = 0usize;
+    for edges in by_gap.values() {
+        for i in 0..edges.len() {
+            for j in (i + 1)..edges.len() {
+                let (a_from, a_to, a0, a1) = edges[i];
+                let (b_from, b_to, b0, b1) = edges[j];
+                if a_from == b_from || a_to == b_to {
+                    continue;
+                }
+                if (a0 < b0 && a1 > b1) || (a0 > b0 && a1 < b1) {
+                    crossings += 1;
+                }
+            }
+        }
+    }
+    crossings
+}
+
 fn pair_crossings(
     a: &str,
     b: &str,
@@ -352,6 +501,199 @@ pub(super) fn compute_ranks_subset(
     }
 
     ranks
+}
+
+/// Dagre-style rank assignment for the experimental layered engine.
+///
+/// The implementation follows the same staged contract as Dagre without
+/// importing a graph runtime: a deterministic greedy feedback-arc ordering
+/// makes the graph acyclic, longest-path ranking establishes a feasible
+/// solution, and bounded median relaxation reduces weighted edge span while
+/// preserving every unit `minlen` constraint.
+pub(super) fn compute_ranks_dagre_style(
+    node_ids: &[String],
+    edges: &[crate::ir::Edge],
+    node_order: &HashMap<String, usize>,
+) -> (HashMap<String, usize>, Vec<(String, String)>) {
+    let node_set: HashSet<&str> = node_ids.iter().map(String::as_str).collect();
+    let subset_edges = edges
+        .iter()
+        .filter(|edge| node_set.contains(edge.from.as_str()) && node_set.contains(edge.to.as_str()))
+        .collect::<Vec<_>>();
+
+    let mut fallback_order = HashMap::new();
+    for (index, id) in node_ids.iter().enumerate() {
+        fallback_order.insert(id.as_str(), index);
+    }
+    let order_key = |id: &str| {
+        node_order
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| fallback_order.get(id).copied().unwrap_or(usize::MAX))
+    };
+
+    // Eades-style greedy feedback-arc ordering. Sinks are peeled to the right,
+    // sources to the left, then the node with maximum out-in balance is chosen.
+    let mut active: HashSet<&str> = node_ids.iter().map(String::as_str).collect();
+    let mut left = Vec::with_capacity(node_ids.len());
+    let mut right = Vec::new();
+    while !active.is_empty() {
+        let mut degrees = active
+            .iter()
+            .map(|id| {
+                let mut incoming = 0usize;
+                let mut outgoing = 0usize;
+                for edge in &subset_edges {
+                    if edge.from == **id && edge.to != **id && active.contains(edge.to.as_str()) {
+                        outgoing += 1;
+                    }
+                    if edge.to == **id && edge.from != **id && active.contains(edge.from.as_str()) {
+                        incoming += 1;
+                    }
+                }
+                (*id, incoming, outgoing)
+            })
+            .collect::<Vec<_>>();
+        degrees.sort_by_key(|(id, _, _)| (order_key(id), *id));
+
+        let selected = if let Some((id, _, _)) = degrees.iter().find(|(_, _, out)| *out == 0) {
+            right.push((*id).to_string());
+            *id
+        } else if let Some((id, _, _)) = degrees.iter().find(|(_, incoming, _)| *incoming == 0) {
+            left.push((*id).to_string());
+            *id
+        } else {
+            let (id, _, _) = degrees
+                .iter()
+                .max_by(|(a_id, a_in, a_out), (b_id, b_in, b_out)| {
+                    let a_balance = *a_out as isize - *a_in as isize;
+                    let b_balance = *b_out as isize - *b_in as isize;
+                    a_balance.cmp(&b_balance).then_with(|| {
+                        order_key(b_id)
+                            .cmp(&order_key(a_id))
+                            .then_with(|| b_id.cmp(a_id))
+                    })
+                })
+                .expect("active graph has a node");
+            left.push((*id).to_string());
+            *id
+        };
+        active.remove(selected);
+    }
+    right.reverse();
+    left.extend(right);
+
+    let positions = left
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (id.as_str(), index))
+        .collect::<HashMap<_, _>>();
+    let mut feedback_edges = Vec::new();
+    let mut oriented_weights: HashMap<(String, String), usize> = HashMap::new();
+    for edge in subset_edges {
+        if edge.from == edge.to {
+            feedback_edges.push((edge.from.clone(), edge.to.clone()));
+            continue;
+        }
+        let from_pos = positions.get(edge.from.as_str()).copied().unwrap_or(0);
+        let to_pos = positions.get(edge.to.as_str()).copied().unwrap_or(0);
+        let (from, to) = if from_pos < to_pos {
+            (edge.from.clone(), edge.to.clone())
+        } else {
+            feedback_edges.push((edge.from.clone(), edge.to.clone()));
+            (edge.to.clone(), edge.from.clone())
+        };
+        *oriented_weights.entry((from, to)).or_insert(0) += 1;
+    }
+    feedback_edges.sort();
+    feedback_edges.dedup();
+
+    let mut incoming: HashMap<String, Vec<(String, usize)>> = HashMap::new();
+    let mut outgoing: HashMap<String, Vec<(String, usize)>> = HashMap::new();
+    for ((from, to), weight) in &oriented_weights {
+        outgoing
+            .entry(from.clone())
+            .or_default()
+            .push((to.clone(), *weight));
+        incoming
+            .entry(to.clone())
+            .or_default()
+            .push((from.clone(), *weight));
+    }
+
+    let mut ranks = HashMap::new();
+    for node in &left {
+        let rank = incoming
+            .get(node)
+            .into_iter()
+            .flatten()
+            .filter_map(|(pred, _)| ranks.get(pred).copied())
+            .map(|rank: usize| rank + 1)
+            .max()
+            .unwrap_or(0);
+        ranks.insert(node.clone(), rank);
+    }
+
+    // Network-simplex-inspired feasible relaxation. Every move is clamped by
+    // predecessor/successor constraints, so the rank assignment remains valid.
+    let max_rank = ranks.values().copied().max().unwrap_or(0);
+    for pass in 0..8 {
+        let traversal: Box<dyn Iterator<Item = &String>> = if pass % 2 == 0 {
+            Box::new(left.iter().rev())
+        } else {
+            Box::new(left.iter())
+        };
+        for node in traversal {
+            let lower = incoming
+                .get(node)
+                .into_iter()
+                .flatten()
+                .filter_map(|(pred, _)| ranks.get(pred).copied())
+                .map(|rank| rank + 1)
+                .max()
+                .unwrap_or(0);
+            let upper = outgoing
+                .get(node)
+                .into_iter()
+                .flatten()
+                .filter_map(|(succ, _)| ranks.get(succ).copied())
+                .map(|rank| rank.saturating_sub(1))
+                .min()
+                .unwrap_or(max_rank);
+            if lower > upper {
+                continue;
+            }
+            let mut targets = Vec::new();
+            if let Some(preds) = incoming.get(node) {
+                for (pred, weight) in preds {
+                    if let Some(rank) = ranks.get(pred) {
+                        targets.extend(std::iter::repeat_n(rank + 1, *weight));
+                    }
+                }
+            }
+            if let Some(succs) = outgoing.get(node) {
+                for (succ, weight) in succs {
+                    if let Some(rank) = ranks.get(succ) {
+                        targets.extend(std::iter::repeat_n(rank.saturating_sub(1), *weight));
+                    }
+                }
+            }
+            if targets.is_empty() {
+                continue;
+            }
+            targets.sort_unstable();
+            let desired = targets[targets.len() / 2].clamp(lower, upper);
+            ranks.insert(node.clone(), desired);
+        }
+    }
+
+    let min_rank = ranks.values().copied().min().unwrap_or(0);
+    if min_rank > 0 {
+        for rank in ranks.values_mut() {
+            *rank -= min_rank;
+        }
+    }
+    (ranks, feedback_edges)
 }
 
 fn layered_ranks_from_order(
@@ -659,6 +1001,47 @@ mod tests {
     }
 
     #[test]
+    fn dagre_style_ranking_breaks_cycle_and_preserves_forward_constraints() {
+        let nodes = vec!["A".into(), "B".into(), "C".into(), "D".into()];
+        let edges = vec![
+            edge("A", "B"),
+            edge("B", "C"),
+            edge("C", "A"),
+            edge("C", "D"),
+        ];
+        let (ranks, feedback) = compute_ranks_dagre_style(&nodes, &edges, &HashMap::new());
+        assert_eq!(feedback.len(), 1);
+        for edge in &edges {
+            if feedback.contains(&(edge.from.clone(), edge.to.clone())) {
+                assert!(ranks[&edge.from] >= ranks[&edge.to]);
+            } else {
+                assert!(ranks[&edge.to] > ranks[&edge.from]);
+            }
+        }
+        assert!(ranks["D"] > ranks["C"]);
+    }
+
+    #[test]
+    fn dagre_style_ranking_is_deterministic() {
+        let nodes = vec!["S".into(), "A".into(), "B".into(), "T".into()];
+        let edges = vec![
+            edge("S", "A"),
+            edge("S", "B"),
+            edge("A", "B"),
+            edge("B", "A"),
+            edge("A", "T"),
+            edge("B", "T"),
+        ];
+        let first = compute_ranks_dagre_style(&nodes, &edges, &HashMap::new());
+        for _ in 0..8 {
+            assert_eq!(
+                compute_ranks_dagre_style(&nodes, &edges, &HashMap::new()),
+                first
+            );
+        }
+    }
+
+    #[test]
     fn median_position_with_no_neighbors() {
         let neighbors: HashMap<String, Vec<String>> = HashMap::new();
         let positions: HashMap<String, usize> = HashMap::new();
@@ -692,5 +1075,35 @@ mod tests {
         let pos_f = rank_nodes[1].iter().position(|n| n == "F").unwrap();
         assert!(pos_d < pos_e, "D should precede E, got {:?}", rank_nodes[1]);
         assert!(pos_e < pos_f, "E should precede F, got {:?}", rank_nodes[1]);
+    }
+
+    #[test]
+    fn dagre_style_ordering_retains_best_crossing_count() {
+        let edges = vec![
+            edge("A", "F"),
+            edge("B", "D"),
+            edge("C", "E"),
+            edge("D", "H"),
+            edge("E", "I"),
+            edge("F", "G"),
+        ];
+        let mut rank_nodes = vec![
+            vec!["A".into(), "B".into(), "C".into()],
+            vec!["D".into(), "E".into(), "F".into()],
+            vec!["G".into(), "H".into(), "I".into()],
+        ];
+        let before = adjacent_rank_crossing_count(&rank_nodes, &edges);
+        order_rank_nodes_dagre_style(&mut rank_nodes, &edges, &HashMap::new(), 4);
+        let after = adjacent_rank_crossing_count(&rank_nodes, &edges);
+        assert!(after <= before, "{before} -> {after}: {rank_nodes:?}");
+
+        let expected = rank_nodes.clone();
+        let mut rerun = vec![
+            vec!["A".into(), "B".into(), "C".into()],
+            vec!["D".into(), "E".into(), "F".into()],
+            vec!["G".into(), "H".into(), "I".into()],
+        ];
+        order_rank_nodes_dagre_style(&mut rerun, &edges, &HashMap::new(), 4);
+        assert_eq!(rerun, expected);
     }
 }
