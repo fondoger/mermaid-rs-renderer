@@ -1,6 +1,6 @@
 # Layered Layout Algorithm Feedback Loop
 
-Status: design (node `dagre-feedback-loop`)
+Status: implemented first iteration, with raw candidate tuning still in progress
 Owner: layout overhaul effort (see `docs/layout_overhaul_plan.md`, `docs/layout_objective.md`)
 
 This document specifies a fully automated feedback loop for iterating on the
@@ -38,6 +38,43 @@ The loop reuses and formalizes existing infrastructure:
 | Mermaid comparison | `scripts/quality_bench.py --engine both` (mmdc cache) | external node-placement anchor |
 | Current layout dumps | `src/layout_dump.rs` (`LayoutDump`) | basis for the proposed stage dump |
 | Determinism | `tests/determinism_suite.rs` | precondition check |
+
+### Implemented engine modes
+
+The first implementation exposes three modes through `--layoutEngine` and the
+`flowchart.engine` configuration value:
+
+- `current` keeps the existing ranking, ordering, and coordinate behavior.
+- `dagre` runs the raw deterministic Dagre-style candidate. It is intentionally
+  opt-in because the corpus loop uses it to expose both wins and regressions.
+- `auto` runs both placement engines and selects the candidate only when the
+  pre-routing metrics in `LayeredLayoutSnapshot` pass the guarded Pareto policy.
+
+`--dumpLayeredLayout PATH` writes the deterministic pre-routing snapshot. The
+snapshot records the requested and selected engines, rank buckets, node
+coordinates, feedback arcs, and placement metrics. Routing and full-layout
+metrics remain downstream vetoes in `scripts/layout_algorithm_loop.py`.
+
+### Validation snapshot: 2026-07-17
+
+The first full run covered 45 repository flowchart fixtures, rendering each
+engine twice per fixture:
+
+- Raw `dagre` reported 53 placement improvements and 24 stage or downstream
+  regression signals. This is expected for the tuning engine and demonstrates
+  that the veto loop catches routed-edge regressions that placement metrics can
+  miss.
+- Guarded `auto` selected `dagre` for 8 of 45 fixtures and fell back to
+  `current` for the rest. It produced 16 reported placement improvements, zero
+  stage or downstream regressions, and deterministic stage dumps and SVGs.
+- The preserved seven-fixture `current` baseline remained byte-identical after
+  the candidate and guard were added.
+
+Representative guarded wins include adjacent-rank crossings dropping from 2
+to 0 for `flowchart_nested_clusters.mmd`, straight-line crossings dropping from
+6 to 5 and total rank span dropping 25% for
+`flowchart_backedges_subgraphs.mmd`, and layout area dropping 11.05% for
+`flowchart_sparse_components.mmd`.
 
 ## 1. Loop overview
 
@@ -258,18 +295,31 @@ seeded/enumerated deterministically so a tuning run is reproducible.
 
 ## 8. Runner and CI integration
 
-Single entry point (new): `scripts/layout_algorithm_loop.py`
+The implemented entry point is `scripts/layout_algorithm_loop.py`:
+
+```bash
+# Tune the raw candidate against the default visual subset. Regressions are
+# expected to fail the command and remain visible in the JSON report.
+python3 scripts/layout_algorithm_loop.py --candidate-engine dagre
+
+# Validate guarded selection against the same subset. This subset can be
+# intentionally neutral when every unsafe raw candidate falls back to current.
+python3 scripts/layout_algorithm_loop.py --candidate-engine auto --allow-neutral
+
+# Supply explicit fixtures for a broader corpus run.
+python3 scripts/layout_algorithm_loop.py --candidate-engine auto \
+  tests/fixtures/flowchart/*.mmd benches/fixtures/flowchart*.mmd
 ```
-scripts/layout_algorithm_loop.py check          # compare baseline/candidate engines
-scripts/layout_algorithm_loop.py accept         # gates + baselines + ledger update
-scripts/layout_algorithm_loop.py report --html  # placement dashboard and downstream veto
-scripts/layout_algorithm_loop.py strata         # membership and coverage gaps
-```
-The runner needs a real engine boundary rather than only orchestrating existing
-end-to-end scripts. Add a stage-dump format, select baseline/candidate engine
-implementations in one binary, compute placement metrics directly, then invoke
-the existing hard/strict gates only for gate 3. CI runs `check` on layout-engine
-changes. `accept` remains local/manual so baseline updates are deliberate.
+
+Each engine is rendered twice. A stage-dump or SVG mismatch is a failure. The
+runner compares placement metrics directly, invokes `layout_score.py` on the
+fixed downstream pipeline, writes a machine-readable report under
+`tmp/layout-algorithm-loop/`, and exits nonzero on any regression. The raw
+`dagre` mode is the hill-climb workbench; `auto` verifies that the runtime guard
+falls back to `current` for unsafe candidates.
+
+Baseline and quality-ledger mutation is deliberately not automated yet. That
+remains a later milestone after the candidate is mature enough for CI gating.
 
 ## 9. Failure modes this design defends against
 
@@ -287,17 +337,16 @@ changes. `accept` remains local/manual so baseline updates are deliberate.
 
 ## 10. Open items
 
-- Introduce `LayoutProblem`, `LayeredLayoutResult`, and a
-  `LayeredLayoutEngine` boundary around the current ranking/ordering/coordinate
-  stages.
-- Add deterministic stage serialization (`--dump-layered-layout`) before
-  routing and post-route cleanup.
-- Implement placement metric extraction and
-  `scripts/layout_algorithm_loop.py`.
+- Extract the current stage boundary into explicit `LayoutProblem`,
+  `LayeredLayoutResult`, and `LayeredLayoutEngine` types. The first iteration
+  keeps both implementations behind `assign_positions_manual` while exposing
+  their common deterministic snapshot.
 - Add `tests/layout_algorithm_baseline.json` and expiring algorithm waivers.
-- Add a second engine implementation or selectable algorithm-stage variants
-  so baseline and candidate can run from the same binary and same problem.
-- Keep `hard_gate.py` and strict `quality_gate.py` as the downstream veto.
+- Promote the corpus runner to CI after the raw candidate has a stable accepted
+  stratum and the runtime guard has remained regression-free.
+- Integrate the full `hard_gate.py` and `quality_gate.py` baselines as an
+  additional release-level veto. The current runner already applies their
+  principal per-layout metrics through `layout_score.py`.
 - Emit IR-derived feature tags from the binary (`--dump-ir-stats`) so the
   runner does not re-parse Mermaid in Python.
 - Backfill stratum coverage: enumerate empty (size × tag) cells and add
